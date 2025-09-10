@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+jinja2
+aiofiles
+python-dotenv
+MetaTrader5
+pandas
+pytz
