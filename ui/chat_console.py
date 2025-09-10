@@ -1,6 +1,15 @@
 import os
+import sys
 import json
 from datetime import datetime
+
+# When executing this file directly (python ui/chat_console.py), Python's
+# import path will be the `ui/` directory, so top-level packages (like
+# `agent`) aren't found. Ensure the project root is on sys.path so
+# imports like `from agent.agent_bridge import ...` work either way.
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 import gradio as gr
 import pandas as pd
 from typing import List, Optional
