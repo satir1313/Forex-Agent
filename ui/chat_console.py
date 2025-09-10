@@ -19,6 +19,8 @@ from config.settings import SETTINGS
 
 ALL_STRATS = list_strategies()
 DEFAULT_TFS = list(SETTINGS.default_timeframes)
+# Server-side counter to help debug refreshes
+pos_refresh_counter = 0
 
 HELP = """
 **Examples**
@@ -346,7 +348,7 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
         "Refresh open positions for the given symbol, select one, and confirm to close it."
     )
     with gr.Row():
-        refresh_pos_btn = gr.Button("Refresh Positions")
+        refresh_pos_btn = gr.Button("Refresh Positions", elem_id="refresh-positions-btn")
         close_vol = gr.Number(value=None, precision=3, label="Close Volume (optional)")
         close_confirm = gr.Checkbox(label="I confirm closing the selected position.")
         close_btn = gr.Button("Close Position", variant="secondary")
@@ -357,16 +359,20 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
     interactive=False,
     row_count=7,
     )
+
     pos_rows_state = gr.State([])
     selected_pos_idx = gr.State(value=None)
     pos_selection_info = gr.Markdown("**Selected position**: _none_")
 
     # Button to refresh positions
     def on_refresh_positions(symbol, history):
+        global pos_refresh_counter
+        pos_refresh_counter += 1
         res = list_positions(symbol=symbol or None)
         if not res.get("ok"):
             history = history + [{"role":"assistant","content":f"Could not fetch positions: {res.get('error','unknown')}"}]
-            return history, None, [], None
+            status = f"failed ({pos_refresh_counter})"
+            return history, None, [], None, status
         rows = res.get("positions", [])
         def _ptype(v):
             try:
@@ -385,7 +391,8 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
                 "profit": r.get("profit"),
             })
         df = pd.DataFrame(view) if view else None
-        return history, df, view, None
+        status = f"ok ({pos_refresh_counter})"
+        return history, df, view, None, status
 
     refresh_pos_btn.click(
         on_refresh_positions,
@@ -450,7 +457,8 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
     with gr.Row():
         export_btn = gr.Button("💾 Export CSV")
         save_btn = gr.Button("🧷 Save Session")
-
+   
+    
     with gr.Column(visible=False) as export_modal:
         export_modal_title = gr.Markdown("### Result")
         export_modal_msg = gr.Markdown("")
@@ -466,8 +474,31 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
 
     export_modal_close.click(fn=_hide_modal, inputs=[], outputs=[export_modal, export_modal_msg])
 
-    # Populate open positions on page load (must be registered inside the Blocks context)
-    demo.load(on_refresh_positions, inputs=[symbol, chatbot], outputs=[chatbot, pos_table, pos_rows_state, selected_pos_idx])
+    auto_refresh_checkbox = gr.Checkbox(
+    label="Auto-refresh positions",
+    value=True
+    )
+
+    refresh_timer = gr.Timer(0.1, active=True)
+
+    def toggle_timer(val: bool):
+        # val is True if box checked, False if unchecked
+        return gr.update(active=val)
+
+    # wire checkbox → timer
+    auto_refresh_checkbox.change(
+        fn=toggle_timer,
+        inputs=auto_refresh_checkbox,
+        outputs=refresh_timer,
+    )
+
+    # what to do on each tick
+    refresh_timer.tick(
+        fn=on_refresh_positions,
+        inputs=[symbol, chatbot],
+        outputs=[chatbot, pos_table, pos_rows_state, selected_pos_idx],
+    )
+
 
 if __name__ == "__main__":
     demo.launch()
