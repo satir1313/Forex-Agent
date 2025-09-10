@@ -225,14 +225,18 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
                 lookback=parsed["lookback"],
             )
             if df is None:
+                # No results — update chat only, clear table. Also set symbol textbox if provided.
+                sym_update = gr.update(value=parsed.get("symbol")) if parsed.get("symbol") else gr.update()
                 return "", history + [
                     {"role":"user","content":cmd_text},
                     {"role":"assistant","content":summary_md},
-                ]
+                ], None, None, sym_update
+            # Populate chat, table and rows state when analysis returns results; set symbol textbox
+            sym_update = gr.update(value=parsed.get("symbol")) if parsed.get("symbol") else gr.update()
             return "", history + [
                 {"role":"user","content":cmd_text},
                 {"role":"assistant","content":summary_md},
-            ]
+            ], df, rows, sym_update
 
         # Otherwise treat as freeform conversational message — proxy to the local GPT agent.
         try:
@@ -256,7 +260,7 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
         except Exception as e:
             return "", history + [{"role": "user", "content": cmd_text}, {"role": "assistant", "content": f"❌ Exception: {str(e)}"}]
 
-    cmd.submit(on_cmd, inputs=[cmd, chatbot], outputs=[cmd, chatbot])
+    cmd.submit(on_cmd, inputs=[cmd, chatbot], outputs=[cmd, chatbot, table, rows_state, symbol])
 
     # Table row selection → update selected_row_idx, selection_info and side
     def on_table_select(evt: gr.SelectData, rows):
@@ -350,7 +354,8 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
     pos_table = gr.Dataframe(
         headers=["ticket","symbol","type","volume","price_open","profit"],
         wrap=True,
-        interactive=False,
+    interactive=False,
+    row_count=7,
     )
     pos_rows_state = gr.State([])
     selected_pos_idx = gr.State(value=None)
