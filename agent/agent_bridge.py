@@ -6,7 +6,7 @@ from config.settings import SETTINGS
 import importlib
 ga = importlib.import_module("gpt_agent")
 
-# IMPORTANT: avoid CLI approvals blocking the web UI
+# Disable CLI approvals so the web UI won't block
 try:
     if SETTINGS.force_disable_tool_approval and hasattr(ga, "REQUIRE_APPROVAL"):
         ga.REQUIRE_APPROVAL = False  # runtime override
@@ -17,7 +17,6 @@ def mt5_connect_safe() -> Dict[str, Any]:
     try:
         res = ga.mt5_connect()
         if not res.get("ok"):
-            # try relaunch
             res = ga.mt5_connect(relaunch=True)
         return res
     except Exception as e:
@@ -33,13 +32,11 @@ def list_strategies() -> List[str]:
     try:
         res = ga.list_forex_strategies()
         if res.get("ok"):
-            # engine may return full dicts or names only
             items = res.get("strategies", [])
             if items and isinstance(items[0], dict) and "name" in items[0]:
                 return [x["name"] for x in items]
             if items and isinstance(items[0], str):
                 return items
-        # Fallback: introspect registry if present
         if hasattr(ga, "_STRATEGY_FUNCS"):
             return list(ga._STRATEGY_FUNCS.keys())  # type: ignore
     except Exception:
@@ -60,7 +57,6 @@ def evaluate(
     out_rows: List[Dict[str, Any]] = []
     errors: List[str] = []
 
-    # Make sure MT5 is ready and symbol is visible
     c = mt5_connect_safe()
     if not c.get("ok"):
         return {"ok": False, "error": f"MT5 connect failed: {c.get('error', 'unknown')}"}
@@ -79,25 +75,24 @@ def evaluate(
                     continue
                 if float(r.get("confidence", 0.0)) < float(min_confidence):
                     continue
-                row = {
+                out_rows.append({
                     "strategy": r.get("strategy"),
                     "decision": r.get("decision"),
                     "confidence": float(r.get("confidence", 0.0)),
                     "timeframe": r.get("timeframe", tf),
                     "as_of_utc": r.get("as_of_utc"),
                     "extras": r.get("extras", {}),
-                }
-                out_rows.append(row)
+                })
         except Exception:
             errors.append(f"{tf}: {traceback.format_exc(limit=1)}")
 
-    # Sort by confidence desc
     out_rows.sort(key=lambda x: x["confidence"], reverse=True)
     return {"ok": True, "rows": out_rows, "errors": errors}
 
-def place_order(symbol: str, side: str, volume: float, sl_points: int = None, tp_points: int = None) -> Dict[str, Any]:
+def place_order(symbol: str, side: str, volume: float,
+                sl_points: int | None = None, tp_points: int | None = None) -> Dict[str, Any]:
     """
-    Optional: keep for future. Calls engine mt5_place_order.
+    Guarded passthrough to engine mt5_place_order.
     """
     try:
         c = mt5_connect_safe()
@@ -106,7 +101,13 @@ def place_order(symbol: str, side: str, volume: float, sl_points: int = None, tp
         s = ensure_symbol(symbol)
         if not s.get("ok"):
             return {"ok": False, "error": f"Symbol enable failed: {s.get('error', 'unknown')}"}
-        res = ga.mt5_place_order(symbol=symbol, side=side, volume=float(volume), sl_points=sl_points, tp_points=tp_points)
+        res = ga.mt5_place_order(
+            symbol=symbol,
+            side=side,
+            volume=float(volume),
+            sl_points=(None if sl_points in ("", None) else int(sl_points)),
+            tp_points=(None if tp_points in ("", None) else int(tp_points)),
+        )
         return res
     except Exception as e:
         return {"ok": False, "error": str(e)}

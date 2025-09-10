@@ -44,6 +44,107 @@ MT5_TIMEOUT_MS = int(os.getenv("MT5_TIMEOUT_MS") or "60000")
 
 UTC = pytz.timezone("Etc/UTC")
 
+import MetaTrader5 as mt5
+
+# --- Safe retcode mapping (handles older MetaTrader5 wheels) ---
+def _build_retcode_labels():
+    import MetaTrader5 as mt5
+    name_to_label = {
+        "TRADE_RETCODE_DONE": "DONE",
+        "TRADE_RETCODE_PLACED": "PLACED",
+        "TRADE_RETCODE_REJECT": "REJECT",
+        "TRADE_RETCODE_CANCEL": "CANCEL",
+        "TRADE_RETCODE_INVALID": "INVALID",
+        "TRADE_RETCODE_INVALID_VOLUME": "INVALID_VOLUME",
+        "TRADE_RETCODE_INVALID_PRICE": "INVALID_PRICE",
+        "TRADE_RETCODE_INVALID_STOPS": "INVALID_STOPS",
+        "TRADE_RETCODE_MARKET_CLOSED": "MARKET_CLOSED",
+        "TRADE_RETCODE_NO_MONEY": "NO_MONEY",
+        "TRADE_RETCODE_PRICE_CHANGED": "PRICE_CHANGED",
+        "TRADE_RETCODE_OFFQUOTES": "OFFQUOTES",
+        "TRADE_RETCODE_TRADE_DISABLED": "TRADE_DISABLED",
+        "TRADE_RETCODE_TRADE_TIMEOUT": "TRADE_TIMEOUT",
+        "TRADE_RETCODE_REQUOTE": "REQUOTE",
+        "TRADE_RETCODE_TOO_MANY_REQUESTS": "TOO_MANY_REQUESTS",
+        # Optional in some builds:
+        "TRADE_RETCODE_PLACED_PARTIAL": "PLACED_PARTIAL",
+    }
+    labels = {}
+    for attr_name, label in name_to_label.items():
+        code = getattr(mt5, attr_name, None)
+        if code is not None:
+            labels[code] = label
+    # Known numeric that may not exist as a constant
+    labels.setdefault(10030, "UNSUPPORTED_FILLING")
+    return labels
+
+_RETCODE_LABELS = _build_retcode_labels()
+
+def _retcode_label(code: int) -> str:
+    return _RETCODE_LABELS.get(code, f"CODE_{code}")
+
+# Symbol execution modes (safe getattr)
+_EXEC_MARKET  = getattr(mt5, "SYMBOL_TRADE_EXECUTION_MARKET", 0)
+_EXEC_INSTANT = getattr(mt5, "SYMBOL_TRADE_EXECUTION_INSTANT", 1)
+_EXEC_REQUEST = getattr(mt5, "SYMBOL_TRADE_EXECUTION_REQUEST", 2)
+_EXEC_EXCHANGE= getattr(mt5, "SYMBOL_TRADE_EXECUTION_EXCHANGE", 3)
+
+# Allowed-filling flags exposed on the symbol (bit flags)
+_SYM_FILL_IOC = getattr(mt5, "SYMBOL_FILLING_IOC", 1 << 1)
+_SYM_FILL_FOK = getattr(mt5, "SYMBOL_FILLING_FOK", 1 << 0)
+# (MetaQuotes may add more later; we only need these two)
+
+# Order filling constants
+_FILLING_IOC    = getattr(mt5, "ORDER_FILLING_IOC", None)
+_FILLING_FOK    = getattr(mt5, "ORDER_FILLING_FOK", None)
+_FILLING_RETURN = getattr(mt5, "ORDER_FILLING_RETURN", None)
+
+def _allowed_fillings_for_symbol(sinfo) -> list:
+    """
+    Compute allowed ORDER_FILLING_* constants for this symbol,
+    based on execution mode and symbol filling flags per docs.
+    """
+    exec_mode = int(getattr(sinfo, "trade_exemode", _EXEC_MARKET))
+    flags = int(getattr(sinfo, "filling_mode", 0))
+
+    allowed = []
+
+    # IOC & FOK depend on symbol flags for Market/Exchange; always allowed for Instant/Request
+    def flag_has(mask): return (flags & mask) == mask
+
+    if exec_mode in (_EXEC_INSTANT, _EXEC_REQUEST):
+        if _FILLING_IOC is not None: allowed.append(_FILLING_IOC)
+        if _FILLING_FOK is not None: allowed.append(_FILLING_FOK)
+        # RETURN is always allowed in Instant/Request
+        if _FILLING_RETURN is not None: allowed.append(_FILLING_RETURN)
+    elif exec_mode == _EXEC_MARKET:
+        # RETURN is disabled regardless of symbol settings (doc table)
+        if flag_has(_SYM_FILL_IOC) and _FILLING_IOC is not None:
+            allowed.append(_FILLING_IOC)
+        if flag_has(_SYM_FILL_FOK) and _FILLING_FOK is not None:
+            allowed.append(_FILLING_FOK)
+    elif exec_mode == _EXEC_EXCHANGE:
+        # RETURN always allowed; IOC/FOK if flags set
+        if flag_has(_SYM_FILL_IOC) and _FILLING_IOC is not None:
+            allowed.append(_FILLING_IOC)
+        if flag_has(_SYM_FILL_FOK) and _FILLING_FOK is not None:
+            allowed.append(_FILLING_FOK)
+        if _FILLING_RETURN is not None:
+            allowed.append(_FILLING_RETURN)
+    else:
+        # Unknown: be conservative — try IOC/FOK if flags say so, else RETURN
+        if flag_has(_SYM_FILL_IOC) and _FILLING_IOC is not None:
+            allowed.append(_FILLING_IOC)
+        if flag_has(_SYM_FILL_FOK) and _FILLING_FOK is not None:
+            allowed.append(_FILLING_FOK)
+        if _FILLING_RETURN is not None:
+            allowed.append(_FILLING_RETURN)
+
+    # Keep unique order, prefer IOC → FOK → RETURN for market-taker behavior
+    pref = [_FILLING_IOC, _FILLING_FOK, _FILLING_RETURN]
+    allowed_sorted = [x for x in pref if x in allowed] + [x for x in allowed if x not in pref]
+    return allowed_sorted
+
 _TIMEFRAME_MAP = {
     "M1": mt5.TIMEFRAME_M1, "M2": mt5.TIMEFRAME_M2, "M3": mt5.TIMEFRAME_M3, "M4": mt5.TIMEFRAME_M4,
     "M5": mt5.TIMEFRAME_M5, "M6": mt5.TIMEFRAME_M6, "M10": mt5.TIMEFRAME_M10, "M12": mt5.TIMEFRAME_M12,
@@ -52,7 +153,16 @@ _TIMEFRAME_MAP = {
     "H6": mt5.TIMEFRAME_H6, "H8": mt5.TIMEFRAME_H8, "H12": mt5.TIMEFRAME_H12,
     "D1": mt5.TIMEFRAME_D1, "W1": mt5.TIMEFRAME_W1, "MN1": mt5.TIMEFRAME_MN1
 }
-_FILLING_MAP = {"FOK": mt5.ORDER_FILLING_FOK, "IOC": mt5.ORDER_FILLING_IOC, "RETURN": mt5.ORDER_FILLING_RETURN}
+
+# --- Safe filling mode lookup (defaults gracefully) ---
+_ORDER_FILLING_FOK = getattr(mt5, "ORDER_FILLING_FOK", None)
+_ORDER_FILLING_IOC = getattr(mt5, "ORDER_FILLING_IOC", None)
+_ORDER_FILLING_RETURN = getattr(mt5, "ORDER_FILLING_RETURN", None)
+
+_FILLING_MAP = {}
+if _ORDER_FILLING_IOC is not None:    _FILLING_MAP["IOC"] = _ORDER_FILLING_IOC
+if _ORDER_FILLING_FOK is not None:    _FILLING_MAP["FOK"] = _ORDER_FILLING_FOK
+if _ORDER_FILLING_RETURN is not None: _FILLING_MAP["RETURN"] = _ORDER_FILLING_RETURN
 
 client = OpenAI()
 
@@ -485,44 +595,175 @@ def mt5_tick(symbol: str) -> Dict[str, Any]:
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+# --- Safe retcode mapping (handles older MetaTrader5 modules) ---
+def _build_retcode_labels():
+    name_to_label = {
+        "TRADE_RETCODE_DONE": "DONE",
+        "TRADE_RETCODE_PLACED": "PLACED",
+        "TRADE_RETCODE_REJECT": "REJECT",
+        "TRADE_RETCODE_CANCEL": "CANCEL",
+        "TRADE_RETCODE_INVALID": "INVALID",
+        "TRADE_RETCODE_INVALID_VOLUME": "INVALID_VOLUME",
+        "TRADE_RETCODE_INVALID_PRICE": "INVALID_PRICE",
+        "TRADE_RETCODE_INVALID_STOPS": "INVALID_STOPS",
+        "TRADE_RETCODE_MARKET_CLOSED": "MARKET_CLOSED",
+        "TRADE_RETCODE_NO_MONEY": "NO_MONEY",
+        "TRADE_RETCODE_PRICE_CHANGED": "PRICE_CHANGED",
+        "TRADE_RETCODE_OFFQUOTES": "OFFQUOTES",
+        "TRADE_RETCODE_TRADE_DISABLED": "TRADE_DISABLED",
+        "TRADE_RETCODE_TRADE_TIMEOUT": "TRADE_TIMEOUT",
+        "TRADE_RETCODE_REQUOTE": "REQUOTE",
+        "TRADE_RETCODE_TOO_MANY_REQUESTS": "TOO_MANY_REQUESTS",
+        # Optional in some builds:
+        "TRADE_RETCODE_PLACED_PARTIAL": "PLACED_PARTIAL",
+    }
+    labels = {}
+    for attr_name, label in name_to_label.items():
+        code = getattr(mt5, attr_name, None)
+        if code is not None:
+            labels[code] = label
+    # Manual known codes that might not exist as attrs in some wheels:
+    labels.setdefault(10030, "UNSUPPORTED_FILLING")   # broker rejects chosen filling mode
+    return labels
+
+_RETCODE_LABELS = _build_retcode_labels()
+
+def _retcode_label(code: int) -> str:
+    return _RETCODE_LABELS.get(code, f"CODE_{code}")
+
+
+from typing import Optional, Dict, Any
+
 def mt5_place_order(symbol: str, side: str, volume: float,
                     sl_points: Optional[int] = None, tp_points: Optional[int] = None,
-                    deviation: int = 20, filling: str = "RETURN",
+                    deviation: int = 20, filling: Optional[str] = None,
                     comment: str = "agent order", magic: int = 990001) -> Dict[str, Any]:
+    """
+    Sends a market order. Chooses a valid fill policy based on the symbol,
+    trying user-preferred first (if any), then IOC → FOK → RETURN when allowed.
+    Surfaces full diagnostics on failure.
+    """
     try:
-        _ensure_symbol(symbol)
+        # ensure symbol visible/enabled (use your own helper if you have one)
+        if not mt5.symbol_select(symbol, True):
+            return {"ok": False, "error": f"symbol_select failed for {symbol}", "last_error": mt5.last_error()}
+
         sinfo = mt5.symbol_info(symbol)
         if sinfo is None:
-            return {"ok": False, "error": f"symbol_info None for {symbol}"}
+            return {"ok": False, "error": f"symbol_info None for {symbol}", "last_error": mt5.last_error()}
         tick = mt5.symbol_info_tick(symbol)
         if tick is None:
-            return {"ok": False, "error": f"symbol_info_tick None for {symbol}"}
-        point = sinfo.point
-        if side.lower() == "buy":
+            return {"ok": False, "error": f"symbol_info_tick None for {symbol}", "last_error": mt5.last_error()}
+
+        point = sinfo.point or 0.0
+        side_l = (side or "").lower()
+        if side_l == "buy":
             order_type, price = mt5.ORDER_TYPE_BUY, tick.ask
-        elif side.lower() == "sell":
+        elif side_l == "sell":
             order_type, price = mt5.ORDER_TYPE_SELL, tick.bid
         else:
-            return {"ok": False, "error": "side must be 'buy' or 'sell'"}
+            return {"ok": False, "error": "side must be 'buy' or 'sell'", "last_error": mt5.last_error()}
 
-        req = {"action": mt5.TRADE_ACTION_DEAL, "symbol": symbol, "volume": float(volume),
-               "type": order_type, "price": price, "deviation": int(deviation),
-               "magic": int(magic), "comment": comment, "type_time": mt5.ORDER_TIME_GTC,
-               "type_filling": _FILLING_MAP.get(filling.upper(), mt5.ORDER_FILLING_RETURN)}
+        # Build a base request (we’ll just swap type_filling)
+        base_req = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": float(volume),
+            "type": order_type,
+            "price": price,
+            "deviation": int(deviation),
+            "magic": int(magic),
+            "comment": comment,
+            "type_time": mt5.ORDER_TIME_GTC,
+        }
         if sl_points:
-            req["sl"] = (price - sl_points*point) if order_type == mt5.ORDER_TYPE_BUY else (price + sl_points*point)
+            base_req["sl"] = (price - sl_points*point) if order_type == mt5.ORDER_TYPE_BUY else (price + sl_points*point)
         if tp_points:
-            req["tp"] = (price + tp_points*point) if order_type == mt5.ORDER_TYPE_BUY else (price - tp_points*point)
+            base_req["tp"] = (price + tp_points*point) if order_type == mt5.ORDER_TYPE_BUY else (price - tp_points*point)
 
-        check = mt5.order_check(req)
-        if check is None: return {"ok": False, "error": f"order_check failed: {mt5.last_error()}"}
-        result = mt5.order_send(req)
-        if result is None: return {"ok": False, "error": f"order_send failed: {mt5.last_error()}"}
-        return {"ok": result.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED),
-                "request": req, "check": getattr(check, "_asdict", lambda: str(check))(),
-                "result": getattr(result, "_asdict", lambda: str(result))()}
+        # Compute allowed fillings for this symbol/mode from symbol_info
+        allowed = _allowed_fillings_for_symbol(sinfo)
+
+        # If user passed a preferred 'filling' string, try it first (if present)
+        preferred_map = {
+            "IOC": _FILLING_IOC,
+            "FOK": _FILLING_FOK,
+            "RETURN": _FILLING_RETURN,
+        }
+        trial_list = []
+        if filling:
+            fconst = preferred_map.get(str(filling).upper())
+            if fconst in allowed:
+                trial_list.append(fconst)
+        # Then add all allowed (de-dup)
+        for f in allowed:
+            if f not in trial_list:
+                trial_list.append(f)
+
+        attempts = []
+        for fconst in trial_list or [None]:
+            req = dict(base_req)
+            if fconst is not None:
+                req["type_filling"] = fconst
+
+            check = mt5.order_check(req)
+            check_dict = getattr(check, "_asdict", lambda: {})()
+
+            result = mt5.order_send(req)
+            result_dict = getattr(result, "_asdict", lambda: {})()
+
+            retcode = int(result_dict.get("retcode", -1)) if result_dict else -1
+            ok = retcode in (getattr(mt5, "TRADE_RETCODE_DONE", 10009),
+                             getattr(mt5, "TRADE_RETCODE_PLACED", 10008))
+
+            # Success path
+            if ok:
+                return {
+                    "ok": True,
+                    "used_filling": fconst,
+                    "request": req,
+                    "check": check_dict,
+                    "result": result_dict,
+                    "retcode": retcode,
+                    "retcode_label": _retcode_label(retcode),
+                }
+
+            # Failure, collect diagnostics and decide if we should try next filling
+            attempts.append({
+                "used_filling": fconst,
+                "check": check_dict,
+                "result": result_dict,
+                "retcode": retcode,
+                "retcode_label": _retcode_label(retcode),
+                "comment": result_dict.get("comment") if isinstance(result_dict, dict) else None,
+            })
+
+            # If error is not unsupported filling (10030), break early
+            if retcode != 10030:  # UNSUPPORTED_FILLING
+                break
+
+        # All attempts failed
+        parts = []
+        for a in attempts:
+            used = a["used_filling"]
+            used_name = ("IOC" if used == _FILLING_IOC else
+                         "FOK" if used == _FILLING_FOK else
+                         "RETURN" if used == _FILLING_RETURN else str(used))
+            parts.append(
+                f"[{used_name}] retcode={a['retcode']} ({a['retcode_label']})"
+                + (f", comment={a['comment']}" if a.get("comment") else "")
+            )
+        return {
+            "ok": False,
+            "error": " ; ".join(parts) or "unknown",
+            "attempts": attempts,
+            "last_error": mt5.last_error(),
+            "exec_mode": int(getattr(sinfo, "trade_exemode", -1)),
+            "symbol_flags": int(getattr(sinfo, "filling_mode", -1)),
+        }
+
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": str(e), "last_error": mt5.last_error()}
 
 def mt5_positions_get(symbol: Optional[str] = None) -> Dict[str, Any]:
     try:
