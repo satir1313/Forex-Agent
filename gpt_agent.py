@@ -785,6 +785,127 @@ def mt5_orders_get(symbol: Optional[str] = None, group: str = "") -> Dict[str, A
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+def mt5_close_position(ticket: int, volume: Optional[float] = None, deviation: int = 20,
+                       comment: str = "agent close", magic: int = 990001) -> Dict[str, Any]:
+    """
+    Close an existing position by ticket. If volume is None, closes full position volume.
+    Tries valid type_filling policies for the symbol similarly to mt5_place_order.
+    """
+    try:
+        # Find the position
+        all_pos = mt5.positions_get()
+        if not all_pos:
+            return {"ok": False, "error": f"No open positions found"}
+        pos_match = None
+        for p in all_pos:
+            try:
+                if int(getattr(p, "ticket", -1)) == int(ticket):
+                    pos_match = p
+                    break
+            except Exception:
+                continue
+        if pos_match is None:
+            return {"ok": False, "error": f"Position ticket {ticket} not found"}
+
+        symbol = getattr(pos_match, "symbol", None)
+        pos_type = int(getattr(pos_match, "type", -1))
+        pos_volume = float(getattr(pos_match, "volume", 0.0))
+        if not symbol:
+            return {"ok": False, "error": "Position has no symbol"}
+        if pos_volume <= 0:
+            return {"ok": False, "error": "Position volume is zero"}
+
+        vol_to_close = float(volume) if volume not in (None, "") else pos_volume
+        if vol_to_close <= 0:
+            return {"ok": False, "error": "Close volume must be > 0"}
+
+        # Ensure symbol and get tick
+        if not mt5.symbol_select(symbol, True):
+            return {"ok": False, "error": f"symbol_select failed for {symbol}", "last_error": mt5.last_error()}
+        sinfo = mt5.symbol_info(symbol)
+        tick = mt5.symbol_info_tick(symbol)
+        if sinfo is None or tick is None:
+            return {"ok": False, "error": f"symbol info/tick missing for {symbol}", "last_error": mt5.last_error()}
+
+        # Determine opposite order type and price
+        if pos_type == getattr(mt5, "POSITION_TYPE_BUY", 0):
+            order_type = mt5.ORDER_TYPE_SELL
+            price = tick.bid
+        elif pos_type == getattr(mt5, "POSITION_TYPE_SELL", 1):
+            order_type = mt5.ORDER_TYPE_BUY
+            price = tick.ask
+        else:
+            return {"ok": False, "error": f"Unknown position type: {pos_type}"}
+
+        # Base request
+        base_req = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "position": int(ticket),
+            "symbol": symbol,
+            "volume": float(vol_to_close),
+            "type": order_type,
+            "price": price,
+            "deviation": int(deviation),
+            "magic": int(magic),
+            "comment": comment,
+            "type_time": mt5.ORDER_TIME_GTC,
+        }
+
+        # Try allowed fillings
+        allowed = _allowed_fillings_for_symbol(sinfo)
+        attempts = []
+        for fconst in allowed or [None]:
+            req = dict(base_req)
+            if fconst is not None:
+                req["type_filling"] = fconst
+
+            check = mt5.order_check(req)
+            check_dict = getattr(check, "_asdict", lambda: {})()
+            result = mt5.order_send(req)
+            result_dict = getattr(result, "_asdict", lambda: {})()
+
+            retcode = int(result_dict.get("retcode", -1)) if isinstance(result_dict, dict) else -1
+            ok = retcode in (getattr(mt5, "TRADE_RETCODE_DONE", 10009),
+                             getattr(mt5, "TRADE_RETCODE_PLACED", 10008))
+            if ok:
+                return {
+                    "ok": True,
+                    "request": req,
+                    "check": check_dict,
+                    "result": result_dict,
+                    "retcode": retcode,
+                    "retcode_label": _retcode_label(retcode),
+                }
+
+            attempts.append({
+                "used_filling": fconst,
+                "check": check_dict,
+                "result": result_dict,
+                "retcode": retcode,
+                "retcode_label": _retcode_label(retcode),
+                "comment": result_dict.get("comment") if isinstance(result_dict, dict) else None,
+            })
+
+            # If error is not unsupported filling (10030), break
+            if retcode != 10030:
+                break
+
+        # All failed
+        parts = []
+        for a in attempts:
+            used = a["used_filling"]
+            used_name = ("IOC" if used == _FILLING_IOC else
+                         "FOK" if used == _FILLING_FOK else
+                         "RETURN" if used == _FILLING_RETURN else str(used))
+            parts.append(
+                f"[{used_name}] retcode={a['retcode']} ({a['retcode_label']})"
+                + (f", comment={a['comment']}" if a.get("comment") else "")
+            )
+        return {"ok": False, "error": " ; ".join(parts) or "unknown", "last_error": mt5.last_error()}
+
+    except Exception as e:
+        return {"ok": False, "error": str(e), "last_error": mt5.last_error()}
+
 def mt5_copy_rates_range(symbol: str, timeframe: str, start_utc: str, end_utc: str) -> Dict[str, Any]:
     try:
         tf = _TIMEFRAME_MAP[timeframe.upper()]

@@ -1,0 +1,12 @@
+{
+  "servers": {
+    "local-fs": {
+      "type": "stdio",
+      "command": "npm",
+      "args": ["start", "--prefix", "${workspaceFolder}/mcp-local"],
+      "env": {
+        "ALLOWED_ROOT": "${workspaceFolder}"
+      }
+    }
+  }
+}

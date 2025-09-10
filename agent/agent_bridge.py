@@ -111,3 +111,23 @@ def place_order(symbol: str, side: str, volume: float,
         return res
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+def list_positions(symbol: Optional[str] = None) -> Dict[str, Any]:
+    try:
+        c = mt5_connect_safe()
+        if not c.get("ok"):
+            return {"ok": False, "error": f"MT5 connect failed: {c.get('error', 'unknown')}"}
+        res = ga.mt5_positions_get(symbol=symbol)
+        return res
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+def close_position(ticket: int, volume: Optional[float] = None) -> Dict[str, Any]:
+    try:
+        c = mt5_connect_safe()
+        if not c.get("ok"):
+            return {"ok": False, "error": f"MT5 connect failed: {c.get('error', 'unknown')}"}
+        res = ga.mt5_close_position(ticket=int(ticket), volume=(None if volume in (None, "") else float(volume)))
+        return res
+    except Exception as e:
+        return {"ok": False, "error": str(e)}

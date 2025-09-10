@@ -5,7 +5,7 @@ import gradio as gr
 import pandas as pd
 from typing import List, Optional
 
-from agent.agent_bridge import evaluate, list_strategies, place_order
+from agent.agent_bridge import evaluate, list_strategies, place_order, list_positions, close_position
 from config.settings import SETTINGS
 
 ALL_STRATS = list_strategies()
@@ -310,6 +310,106 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
     place_btn.click(
         on_place,
         inputs=[symbol, rows_state, selected_row_idx, po_side, po_volume, po_sl, po_tp, po_confirm, chatbot],
+        outputs=[chatbot],
+    )
+
+    # ---- Close Position panel (guarded)
+    gr.Markdown("## Close Position (Guarded)")
+    gr.Markdown(
+        "Refresh open positions for the given symbol, select one, and confirm to close it."
+    )
+    with gr.Row():
+        refresh_pos_btn = gr.Button("Refresh Positions")
+        close_vol = gr.Number(value=None, precision=3, label="Close Volume (optional)")
+        close_confirm = gr.Checkbox(label="I confirm closing the selected position.")
+        close_btn = gr.Button("Close Position", variant="secondary")
+
+    pos_table = gr.Dataframe(
+        headers=["ticket","symbol","type","volume","price_open","profit"],
+        wrap=True,
+        interactive=False,
+    )
+    pos_rows_state = gr.State([])
+    selected_pos_idx = gr.State(value=None)
+    pos_selection_info = gr.Markdown("**Selected position**: _none_")
+
+    # Button to refresh positions
+    def on_refresh_positions(symbol, history):
+        res = list_positions(symbol=symbol or None)
+        if not res.get("ok"):
+            history = history + [{"role":"assistant","content":f"Could not fetch positions: {res.get('error','unknown')}"}]
+            return history, None, [], None
+        rows = res.get("positions", [])
+        def _ptype(v):
+            try:
+                i = int(v)
+                return "BUY" if i == 0 else ("SELL" if i == 1 else str(i))
+            except Exception:
+                return str(v)
+        view = []
+        for r in rows:
+            view.append({
+                "ticket": r.get("ticket"),
+                "symbol": r.get("symbol"),
+                "type": _ptype(r.get("type")),
+                "volume": r.get("volume"),
+                "price_open": r.get("price_open"),
+                "profit": r.get("profit"),
+            })
+        df = pd.DataFrame(view) if view else None
+        return history, df, view, None
+
+    refresh_pos_btn.click(
+        on_refresh_positions,
+        inputs=[symbol, chatbot],
+        outputs=[chatbot, pos_table, pos_rows_state, selected_pos_idx],
+    )
+
+    # Selection handler for positions table
+    def on_pos_select(evt: gr.SelectData, rows):
+        try:
+            ridx = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
+        except Exception:
+            ridx = None
+        if ridx is None or rows is None or ridx >= len(rows):
+            return None, "**Selected position**: _none_"
+        sel = rows[int(ridx)]
+        msg = f"**Selected position**: ticket {sel.get('ticket')} {sel.get('symbol')} {sel.get('type')} vol {sel.get('volume')}"
+        return ridx, msg
+
+    pos_table.select(
+        on_pos_select,
+        inputs=[pos_rows_state],
+        outputs=[selected_pos_idx, pos_selection_info],
+    )
+
+    # Close selected position
+    def on_close(symbol, rows, ridx, volume, confirmed, history):
+        if not confirmed:
+            history = history + [{"role":"assistant","content":"Please tick **Confirm** to close the position."}]
+            return history
+        if ridx is None or rows is None or ridx >= len(rows):
+            history = history + [{"role":"assistant","content":"Select a **position** first and refresh if needed."}]
+            return history
+        sel = rows[int(ridx)]
+        ticket = sel.get("ticket")
+        if ticket is None:
+            history = history + [{"role":"assistant","content":"Selected row has no ticket."}]
+            return history
+        v = None if volume in (None, "") else float(volume)
+        res = close_position(ticket=int(ticket), volume=v)
+        if not res.get("ok"):
+            history = history + [{"role":"assistant","content":f"Close failed: {res.get('error','unknown')}"}]
+            return history
+        summary = f"Closed position {ticket} on {sel.get('symbol')}"
+        if v:
+            summary += f" (volume {v})"
+        history = history + [{"role":"assistant","content":summary}]
+        return history
+
+    close_btn.click(
+        on_close,
+        inputs=[symbol, pos_rows_state, selected_pos_idx, close_vol, close_confirm, chatbot],
         outputs=[chatbot],
     )
 
