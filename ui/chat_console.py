@@ -168,12 +168,7 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
     selected_row_idx = gr.State(value=None)  # keep track of user selection
     selection_info = gr.Markdown("**Selected row**: _none_")
 
-    # ---- Export & Session controls
-    with gr.Row():
-        export_btn = gr.Button("💾 Export CSV")
-        export_file = gr.File(label="Last export", interactive=False)
-        save_btn = gr.Button("🧷 Save Session")
-        session_file = gr.File(label="Saved session", interactive=False)
+    # ---- Export & Session controls (moved to page bottom)
 
     # ---- Place Order panel (guarded)
     gr.Markdown("## ⚠️ Place Order (Guarded)")
@@ -288,20 +283,20 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
     def on_export(rows, symbol, history):
         path = export_csv(rows, symbol)
         if not path:
-            history = history + [{"role":"assistant","content":"Nothing to export yet."}]
-            return history, None
-        history = history + [{"role":"assistant","content":f"Exported CSV to `{path}`"}]
-        return history, path
+            msg = "Export failed: Nothing to export yet."
+            history = history + [{"role":"assistant","content":msg}]
+            return history, gr.update(visible=True), msg
+        msg = f"Exported CSV to `{path}`"
+        history = history + [{"role":"assistant","content":msg}]
+        return history, gr.update(visible=True), msg
 
-    export_btn.click(on_export, inputs=[rows_state, symbol, chatbot], outputs=[chatbot, export_file])
 
     # Save Session
     def on_save(history, rows, symbol):
         path = save_session(history, rows, symbol)
-        history = history + [{"role":"assistant","content":f"Saved session to `{path}`"}]
-        return history, path
-
-    save_btn.click(on_save, inputs=[chatbot, rows_state, symbol], outputs=[chatbot, session_file])
+        msg = f"Saved session to `{path}`"
+        history = history + [{"role":"assistant","content":msg}]
+        return history, gr.update(visible=True), msg
 
     # Place Order (guarded)
     def on_place(symbol, rows, ridx, side, volume, sl, tp, confirmed, history):
@@ -445,6 +440,29 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
     gr.Markdown(
         "_Safety note_: Market orders are **live** on your logged-in MT5 terminal. Use small volumes while testing."
     )
+
+    # Place export & session controls at the bottom of the page (modal-based feedback)
+    with gr.Row():
+        export_btn = gr.Button("💾 Export CSV")
+        save_btn = gr.Button("🧷 Save Session")
+
+    with gr.Column(visible=False) as export_modal:
+        export_modal_title = gr.Markdown("### Result")
+        export_modal_msg = gr.Markdown("")
+        export_modal_close = gr.Button("Close")
+
+    # Attach handlers for bottom export/save controls to show modal
+    export_btn.click(on_export, inputs=[rows_state, symbol, chatbot], outputs=[chatbot, export_modal, export_modal_msg])
+    save_btn.click(on_save, inputs=[chatbot, rows_state, symbol], outputs=[chatbot, export_modal, export_modal_msg])
+
+    # Close modal handler
+    def _hide_modal():
+        return gr.update(visible=False), ""
+
+    export_modal_close.click(fn=_hide_modal, inputs=[], outputs=[export_modal, export_modal_msg])
+
+    # Populate open positions on page load (must be registered inside the Blocks context)
+    demo.load(on_refresh_positions, inputs=[symbol, chatbot], outputs=[chatbot, pos_table, pos_rows_state, selected_pos_idx])
 
 if __name__ == "__main__":
     demo.launch()
