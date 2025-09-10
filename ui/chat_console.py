@@ -14,7 +14,7 @@ import gradio as gr
 import pandas as pd
 from typing import List, Optional
 
-from agent.agent_bridge import evaluate, list_strategies, place_order, list_positions, close_position
+from agent.agent_bridge import evaluate, list_strategies, place_order, list_positions, close_position, chat as agent_chat
 from config.settings import SETTINGS
 
 ALL_STRATS = list_strategies()
@@ -157,7 +157,7 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
 
     # Chatbot uses OpenAI-style message dicts
     chatbot = gr.Chatbot(height=400, type="messages")
-    cmd = gr.Textbox(label="Command (e.g. analyze USDJPY.a M15,H1 minconf=0.25)", placeholder="Type 'analyze SYMBOL ...' and press Enter")
+    cmd = gr.Textbox(label="Command (e.g. analyze USDJPY.a M15,H1 minconf=0.25)", placeholder="Type 'analyze SYMBOL ...' or chat freely and press Enter")
 
     table = gr.Dataframe(
         headers=["strategy","decision","confidence","timeframe","as_of_utc","extras"],
@@ -219,28 +219,47 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
 
     # Freeform command box
     def on_cmd(cmd_text, history):
+        # If this is an `analyze ...` command, use the existing analyze flow.
         parsed = parse_freeform(cmd_text)
-        if not parsed:
-            return "", history + [
-                {"role":"user","content":cmd_text},
-                {"role":"assistant","content":"Type `analyze SYMBOL` or use the controls above."},
-            ]
-        df, summary_md, rows = run(
-            symbol=parsed["symbol"],
-            tfs=parsed["timeframes"],
-            which=parsed["which"],
-            min_conf=parsed["min_conf"],
-            lookback=parsed["lookback"],
-        )
-        if df is None:
+        if parsed:
+            df, summary_md, rows = run(
+                symbol=parsed["symbol"],
+                tfs=parsed["timeframes"],
+                which=parsed["which"],
+                min_conf=parsed["min_conf"],
+                lookback=parsed["lookback"],
+            )
+            if df is None:
+                return "", history + [
+                    {"role":"user","content":cmd_text},
+                    {"role":"assistant","content":summary_md},
+                ]
             return "", history + [
                 {"role":"user","content":cmd_text},
                 {"role":"assistant","content":summary_md},
             ]
-        return "", history + [
-            {"role":"user","content":cmd_text},
-            {"role":"assistant","content":summary_md},
-        ]
+
+        # Otherwise treat as freeform conversational message — proxy to the local GPT agent.
+        try:
+            # Prepare messages for the agent using the existing chat transcript.
+            # Convert Gradio chat history (list of dict roles) into agent messages.
+            existing_msgs = []
+            for m in (history or []):
+                # Gradio stores simple role/content pairs
+                r = m.get("role") if isinstance(m, dict) else None
+                c = m.get("content") if isinstance(m, dict) else None
+                if r and c:
+                    existing_msgs.append({"role": r, "content": c})
+            # Append the new user message
+            existing_msgs.append({"role": "user", "content": cmd_text})
+            res = agent_chat(messages=existing_msgs)
+            if not res.get("ok"):
+                return "", history + [{"role": "user", "content": cmd_text}, {"role": "assistant", "content": f"❌ Error: {res.get('error','unknown') }"}]
+            reply = res.get("reply") or ""
+            # Persist the full transcript returned by agent for future tool-calls
+            return "", history + [{"role": "user", "content": cmd_text}, {"role": "assistant", "content": reply}]
+        except Exception as e:
+            return "", history + [{"role": "user", "content": cmd_text}, {"role": "assistant", "content": f"❌ Exception: {str(e)}"}]
 
     cmd.submit(on_cmd, inputs=[cmd, chatbot], outputs=[cmd, chatbot])
 

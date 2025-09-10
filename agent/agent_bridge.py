@@ -131,3 +131,13 @@ def close_position(ticket: int, volume: Optional[float] = None) -> Dict[str, Any
         return res
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+def chat(messages: List[Dict[str, Any]], temperature: float = 0.2) -> Dict[str, Any]:
+    """Proxy to gpt_agent.chat_once for the web UI to call.
+    `messages` is a list of role/content dicts; returns {'ok': True, 'reply': str, 'messages': [...]}
+    """
+    try:
+        return ga.chat_once(messages=messages, temperature=temperature)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}

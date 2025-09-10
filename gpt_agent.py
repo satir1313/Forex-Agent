@@ -1824,6 +1824,39 @@ def _assistant_msg_with_tool_calls(msg):
         })
     return {"role": "assistant", "content": msg.content or "", "tool_calls": tool_calls_payload}
 
+
+def chat_once(messages: List[Dict[str, Any]], temperature: float = 0.2) -> Dict[str, Any]:
+    """
+    One-shot conversational call that supports tool-calls. `messages` should be
+    a list of dicts with roles (system/user/assistant). This will run the model
+    repeatedly if the model emits tool calls, execute those tools (via call_tool),
+    append tool outputs, and return the final assistant reply plus the full message
+    transcript.
+    """
+    msgs = list(messages or [])
+    if not msgs or msgs[0].get("role") != "system":
+        msgs = [{"role": "system", "content": SYSTEM_PROMPT}] + msgs
+
+    while True:
+        response = client.chat.completions.create(
+            model=MODEL, messages=msgs, tools=TOOLS, tool_choice="auto", temperature=temperature,
+        )
+        msg = response.choices[0].message
+        # If model wants to call a tool, surface the structured tool call to the
+        # transcript and execute the tool(s). Then loop to let the model observe
+        # the results and complete its reply.
+        if getattr(msg, "tool_calls", None):
+            msgs.append(_assistant_msg_with_tool_calls(msg))
+            for tc in msg.tool_calls:
+                result = call_tool({"function": {"name": tc.function.name, "arguments": tc.function.arguments}})
+                msgs.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps(result)[:120000]})
+            # Continue the loop so model can generate final reply after tool outputs
+            continue
+
+        text = (msg.content or "").strip()
+        msgs.append({"role": "assistant", "content": msg.content or ""})
+        return {"ok": True, "reply": text, "messages": msgs}
+
 def chat_loop():
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     print(f"Local agent ready. Model: {MODEL}")
