@@ -413,6 +413,7 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
     )
     with gr.Row():
         refresh_pos_btn = gr.Button("Refresh Positions", elem_id="refresh-positions-btn")
+        filter_by_symbol = gr.Checkbox(label="Filter by symbol", value=False)
         close_vol = gr.Number(value=None, precision=3, label="Close Volume (optional)")
         close_confirm = gr.Checkbox(label="I confirm closing the selected position.")
         close_btn = gr.Button("Close Position", variant="secondary")
@@ -429,10 +430,11 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
     pos_selection_info = gr.Markdown("**Selected position**: _none_")
 
     # Button to refresh positions (silent: does not touch chatbot)
-    def on_refresh_positions_silent(symbol):
+    def on_refresh_positions_silent(symbol, filter_by_symbol):
         global pos_refresh_counter
         pos_refresh_counter += 1
-        res = list_positions(symbol=symbol or None)
+        # Only filter by the symbol textbox when explicitly requested
+        res = list_positions(symbol=(symbol if (filter_by_symbol and symbol) else None))
         if not res.get("ok"):
             # On failure, keep table empty but do not modify chat
             return None, [], None
@@ -458,7 +460,7 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
 
     refresh_pos_btn.click(
         on_refresh_positions_silent,
-        inputs=[symbol],
+        inputs=[symbol, filter_by_symbol],
         outputs=[pos_table, pos_rows_state, selected_pos_idx],
     )
 
@@ -557,7 +559,7 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
     # what to do on each tick
     refresh_timer.tick(
         fn=on_refresh_positions_silent,
-        inputs=[symbol],
+        inputs=[symbol, filter_by_symbol],
         outputs=[pos_table, pos_rows_state, selected_pos_idx],
     )
 
