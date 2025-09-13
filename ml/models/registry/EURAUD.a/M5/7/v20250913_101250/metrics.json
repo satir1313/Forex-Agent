@@ -1,0 +1,43 @@
+{
+  "n_train": 2297,
+  "n_valid": 574,
+  "balanced_accuracy": 0.36957547277831976,
+  "report": {
+    "buy": {
+      "precision": 0.5074626865671642,
+      "recall": 0.525096525096525,
+      "f1-score": 0.5161290322580645,
+      "support": 259.0
+    },
+    "sell": {
+      "precision": 0.5359477124183006,
+      "recall": 0.5836298932384342,
+      "f1-score": 0.5587734241908007,
+      "support": 281.0
+    },
+    "none": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1-score": 0.0,
+      "support": 34.0
+    },
+    "accuracy": 0.5226480836236934,
+    "macro avg": {
+      "precision": 0.3478034663284883,
+      "recall": 0.36957547277831976,
+      "f1-score": 0.3583008188162884,
+      "support": 574.0
+    },
+    "weighted avg": {
+      "precision": 0.4913486812028537,
+      "recall": 0.5226480836236934,
+      "f1-score": 0.5064333650739612,
+      "support": 574.0
+    }
+  },
+  "classes": [
+    "buy",
+    "sell",
+    "none"
+  ]
+}

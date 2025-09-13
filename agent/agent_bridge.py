@@ -5,6 +5,14 @@ from config.settings import SETTINGS
 # Import your engine
 import importlib
 ga = importlib.import_module("gpt_agent")
+import os
+import json
+
+# ML serving (Arvid v1)
+try:
+    from ml.serving.infer import infer_timeframes as arvid_infer_timeframes
+except Exception:
+    arvid_infer_timeframes = None  # type: ignore
 
 # Disable CLI approvals so the web UI won't block
 try:
@@ -85,6 +93,33 @@ def evaluate(
                 })
         except Exception:
             errors.append(f"{tf}: {traceback.format_exc(limit=1)}")
+
+    out_rows.sort(key=lambda x: x["confidence"], reverse=True)
+    # Attempt to append Arvid v1 model signals (if serving available and models present)
+    try:
+        if arvid_infer_timeframes is not None:
+            # Load horizons map from ML config if available
+            horizons_map = {}
+            cfg_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "ml", "config", "train.yaml")
+            if os.path.isfile(cfg_path):
+                try:
+                    import yaml  # type: ignore
+                    with open(cfg_path, "r", encoding="utf-8") as f:
+                        cfg = yaml.safe_load(f) or {}
+                    horizons_map = cfg.get("horizons", {}) or {}
+                except Exception:
+                    horizons_map = {}
+            # Use best_eval policy by default to pick one horizon per TF
+            arvid_rows = arvid_infer_timeframes(symbol, timeframes, horizons_map, select_policy="best_eval")
+            # Filter with same min_confidence and drop no-trade if any
+            for r in arvid_rows:
+                if r.get("decision") == "no-trade":
+                    continue
+                if float(r.get("confidence", 0.0)) < float(min_confidence):
+                    continue
+                out_rows.append(r)
+    except Exception as e:
+        errors.append(f"Arvid v1: {str(e)}")
 
     out_rows.sort(key=lambda x: x["confidence"], reverse=True)
     return {"ok": True, "rows": out_rows, "errors": errors}

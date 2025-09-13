@@ -1,0 +1,59 @@
+{
+  "symbol": "EURAUD.a",
+  "timeframe": "M5",
+  "horizon": 7,
+  "n_oos": 430,
+  "metrics": {
+    "balanced_accuracy": 0.3846846846846847,
+    "report": {
+      "buy": {
+        "precision": 0.4883720930232558,
+        "recall": 0.6810810810810811,
+        "f1-score": 0.5688487584650113,
+        "support": 185.0
+      },
+      "sell": {
+        "precision": 0.6104651162790697,
+        "recall": 0.47297297297297297,
+        "f1-score": 0.5329949238578681,
+        "support": 222.0
+      },
+      "none": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1-score": 0.0,
+        "support": 23.0
+      },
+      "accuracy": 0.5372093023255814,
+      "macro avg": {
+        "precision": 0.36627906976744184,
+        "recall": 0.3846846846846847,
+        "f1-score": 0.36728122744095976,
+        "support": 430.0
+      },
+      "weighted avg": {
+        "precision": 0.5252839372633855,
+        "recall": 0.5372093023255814,
+        "f1-score": 0.5199113800290088,
+        "support": 430.0
+      }
+    },
+    "confusion_matrix": [
+      [
+        126,
+        59,
+        0
+      ],
+      [
+        117,
+        105,
+        0
+      ],
+      [
+        15,
+        8,
+        0
+      ]
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+symbols:
+  - USDJPY.a
+  - EURAUD.a
+timeframes:
+  - M5
+  - M15
+  - H1
+horizons:
+  M5: [7]
+  M15: [4, 6]
+  H1: [2, 3]
+lookback_days: 365
+data_dir: ml/data
+
+# Labeling thresholds (ATR multiple k per TF)
+threshold_k:
+  M5: 0.12
+  M15: 0.14
+  H1: 0.16
