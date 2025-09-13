@@ -194,3 +194,36 @@ This runs data → features → labels → train → eval and checks files, shap
 - Calibration uses isotonic regression on a validation split; sklearn warns about `cv='prefit'` deprecation — acceptable for MVP.
 - M5 weekend: historical bars are still retrievable; “no data returned” typically means MT5 has not downloaded history yet — open the chart and scroll back.
 
+## Quick Start for ML (Arvid v1)
+
+- End‑to‑end, using defaults from `ml/config/train.yaml`:
+  - `.\.venv\Scripts\python.exe -m ml.agents.orchestrator`
+- Quick iteration for 2 symbols on M5 with shorter lookback:
+  - `.\.venv\Scripts\python.exe -m ml.agents.orchestrator --symbols USDJPY.a EURAUD.a --timeframes M5 --lookback-days 7`
+
+## Schedule Daily Pipeline (Windows)
+
+Option A — create a tiny runner script and schedule it:
+
+1) Create `run_orchestrator.ps1` (in the project root):
+
+```powershell
+$ErrorActionPreference = 'Stop'
+& "$PSScriptRoot\.venv\Scripts\python.exe" -m ml.agents.orchestrator
+```
+
+2) Register a daily task at 00:15 (adjust paths/times as needed):
+
+```powershell
+schtasks /Create /TN "ArvidPipelineDaily" /SC DAILY /ST 00:15 ^
+ /TR "powershell -NoProfile -ExecutionPolicy Bypass -File C:\development\mt5\run_orchestrator.ps1" /F
+```
+
+Option B — one‑liner without a script (be mindful of quoting):
+
+```powershell
+schtasks /Create /TN "ArvidPipelineDaily" /SC DAILY /ST 00:15 ^
+ /TR "cmd /c C:\development\mt5\.venv\Scripts\python.exe -m ml.agents.orchestrator" /F
+```
+
+Tip: start with a manual run in a PowerShell window to confirm MT5 connectivity and Parquet/ML dependencies are installed.
