@@ -113,3 +113,14 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\.venv\Scripts\Acti
 ---
 
 If you'd like, I can also add `gradio` to `requirements.txt` and a small `scripts` section to the root (PowerShell friendly) to simplify the run steps. Tell me which you'd prefer and I'll update the repo.
+
+
+## To run collector
+# from project root, in your venv
+python -m scripts.collector --symbols USDJPY.a,XAUUSD.a --tfs M5,M15,H1 --every 60
+# or one-shot for testing:
+python -m scripts.collector --once --symbols USDJPY.a --tfs M5 --every 5
+$ python -m scripts.collector --once --symbols USDJPY.a,AUDJPY.a, EURUSD.a, GBPAUD.a,GBPUSD.a,EURGBP.a,GBPCHF.a,GBPJPY.a,EURGBP.a,EURNZD.a --tfs M5 --every 5
+
+## To run trainer (Daily)
+python -m scripts.trainer --days 30

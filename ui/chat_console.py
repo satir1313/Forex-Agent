@@ -262,7 +262,71 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
         except Exception as e:
             return "", history + [{"role": "user", "content": cmd_text}, {"role": "assistant", "content": f"❌ Exception: {str(e)}"}]
 
-    cmd.submit(on_cmd, inputs=[cmd, chatbot], outputs=[cmd, chatbot, table, rows_state, symbol])
+    # Wrapper that always returns 5 outputs to satisfy binding
+    def on_cmd2(cmd_text, history):
+        parsed = parse_freeform(cmd_text)
+        if parsed:
+            df, summary_md, rows = run(
+                symbol=parsed["symbol"],
+                tfs=parsed["timeframes"],
+                which=parsed["which"],
+                min_conf=parsed["min_conf"],
+                lookback=parsed["lookback"],
+            )
+            sym_update = gr.update(value=parsed.get("symbol")) if parsed.get("symbol") else gr.update()
+            if df is None:
+                return "", (
+                    (history or [])
+                    + [
+                        {"role": "user", "content": cmd_text},
+                        {"role": "assistant", "content": summary_md},
+                    ]
+                ), None, None, sym_update
+            return "", (
+                (history or [])
+                + [
+                    {"role": "user", "content": cmd_text},
+                    {"role": "assistant", "content": summary_md},
+                ]
+            ), df, rows, sym_update
+
+        # Freeform chat path
+        try:
+            existing_msgs = []
+            for m in (history or []):
+                r = m.get("role") if isinstance(m, dict) else None
+                c = m.get("content") if isinstance(m, dict) else None
+                if r and c:
+                    existing_msgs.append({"role": r, "content": c})
+            existing_msgs.append({"role": "user", "content": cmd_text})
+            res = agent_chat(messages=existing_msgs)
+            if not res.get("ok"):
+                return "", (
+                    (history or [])
+                    + [
+                        {"role": "user", "content": cmd_text},
+                        {"role": "assistant", "content": f"�?O Error: {res.get('error','unknown') }"},
+                    ]
+                ), gr.update(), gr.update(), gr.update()
+            reply = res.get("reply") or ""
+            return "", (
+                (history or [])
+                + [
+                    {"role": "user", "content": cmd_text},
+                    {"role": "assistant", "content": reply},
+                ]
+            ), gr.update(), gr.update(), gr.update()
+        except Exception as e:
+            return "", (
+                (history or [])
+                + [
+                    {"role": "user", "content": cmd_text},
+                    {"role": "assistant", "content": f"�?O Exception: {str(e)}"},
+                ]
+            ), gr.update(), gr.update(), gr.update()
+
+    # Use a wrapper that ensures we always return the expected 5 outputs
+    cmd.submit(on_cmd2, inputs=[cmd, chatbot], outputs=[cmd, chatbot, table, rows_state, symbol])
 
     # Table row selection → update selected_row_idx, selection_info and side
     def on_table_select(evt: gr.SelectData, rows):
@@ -364,15 +428,14 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
     selected_pos_idx = gr.State(value=None)
     pos_selection_info = gr.Markdown("**Selected position**: _none_")
 
-    # Button to refresh positions
-    def on_refresh_positions(symbol, history):
+    # Button to refresh positions (silent: does not touch chatbot)
+    def on_refresh_positions_silent(symbol):
         global pos_refresh_counter
         pos_refresh_counter += 1
         res = list_positions(symbol=symbol or None)
         if not res.get("ok"):
-            history = history + [{"role":"assistant","content":f"Could not fetch positions: {res.get('error','unknown')}"}]
-            status = f"failed ({pos_refresh_counter})"
-            return history, None, [], None, status
+            # On failure, keep table empty but do not modify chat
+            return None, [], None
         rows = res.get("positions", [])
         def _ptype(v):
             try:
@@ -391,13 +454,12 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
                 "profit": r.get("profit"),
             })
         df = pd.DataFrame(view) if view else None
-        status = f"ok ({pos_refresh_counter})"
-        return history, df, view, None, status
+        return df, view, None
 
     refresh_pos_btn.click(
-        on_refresh_positions,
-        inputs=[symbol, chatbot],
-        outputs=[chatbot, pos_table, pos_rows_state, selected_pos_idx],
+        on_refresh_positions_silent,
+        inputs=[symbol],
+        outputs=[pos_table, pos_rows_state, selected_pos_idx],
     )
 
     # Selection handler for positions table
@@ -479,7 +541,7 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
     value=True
     )
 
-    refresh_timer = gr.Timer(0.1, active=True)
+    refresh_timer = gr.Timer(1.0, active=True)
 
     def toggle_timer(val: bool):
         # val is True if box checked, False if unchecked
@@ -494,9 +556,9 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
 
     # what to do on each tick
     refresh_timer.tick(
-        fn=on_refresh_positions,
-        inputs=[symbol, chatbot],
-        outputs=[chatbot, pos_table, pos_rows_state, selected_pos_idx],
+        fn=on_refresh_positions_silent,
+        inputs=[symbol],
+        outputs=[pos_table, pos_rows_state, selected_pos_idx],
     )
 
 
