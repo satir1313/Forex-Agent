@@ -214,54 +214,6 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
         outputs=[chatbot, table, rows_state],
     )
 
-    # Freeform command box
-    def on_cmd(cmd_text, history):
-        # If this is an `analyze ...` command, use the existing analyze flow.
-        parsed = parse_freeform(cmd_text)
-        if parsed:
-            df, summary_md, rows = run(
-                symbol=parsed["symbol"],
-                tfs=parsed["timeframes"],
-                which=parsed["which"],
-                min_conf=parsed["min_conf"],
-                lookback=parsed["lookback"],
-            )
-            if df is None:
-                # No results — update chat only, clear table. Also set symbol textbox if provided.
-                sym_update = gr.update(value=parsed.get("symbol")) if parsed.get("symbol") else gr.update()
-                return "", history + [
-                    {"role":"user","content":cmd_text},
-                    {"role":"assistant","content":summary_md},
-                ], None, None, sym_update
-            # Populate chat, table and rows state when analysis returns results; set symbol textbox
-            sym_update = gr.update(value=parsed.get("symbol")) if parsed.get("symbol") else gr.update()
-            return "", history + [
-                {"role":"user","content":cmd_text},
-                {"role":"assistant","content":summary_md},
-            ], df, rows, sym_update
-
-        # Otherwise treat as freeform conversational message — proxy to the local GPT agent.
-        try:
-            # Prepare messages for the agent using the existing chat transcript.
-            # Convert Gradio chat history (list of dict roles) into agent messages.
-            existing_msgs = []
-            for m in (history or []):
-                # Gradio stores simple role/content pairs
-                r = m.get("role") if isinstance(m, dict) else None
-                c = m.get("content") if isinstance(m, dict) else None
-                if r and c:
-                    existing_msgs.append({"role": r, "content": c})
-            # Append the new user message
-            existing_msgs.append({"role": "user", "content": cmd_text})
-            res = agent_chat(messages=existing_msgs)
-            if not res.get("ok"):
-                return "", history + [{"role": "user", "content": cmd_text}, {"role": "assistant", "content": f"❌ Error: {res.get('error','unknown') }"}]
-            reply = res.get("reply") or ""
-            # Persist the full transcript returned by agent for future tool-calls
-            return "", history + [{"role": "user", "content": cmd_text}, {"role": "assistant", "content": reply}]
-        except Exception as e:
-            return "", history + [{"role": "user", "content": cmd_text}, {"role": "assistant", "content": f"❌ Exception: {str(e)}"}]
-
     # Wrapper that always returns 5 outputs to satisfy binding
     def on_cmd2(cmd_text, history):
         parsed = parse_freeform(cmd_text)
