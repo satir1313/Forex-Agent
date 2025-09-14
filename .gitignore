@@ -6,3 +6,5 @@ sessions/
 node_modules/
 dist/
 data/
+models/
+logs/

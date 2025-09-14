@@ -22,13 +22,13 @@ DEFAULT_TFS = list(SETTINGS.default_timeframes)
 # Server-side counter to help debug refreshes
 pos_refresh_counter = 0
 
-HELP = """
-**Examples**
-- `analyze EURUSD.a` — uses default TFs and confidence filter  
-- `analyze USDJPY.a M5,M15,H1` — explicit timeframes  
-- `analyze GBPUSD.a minconf=0.25 lookback=180` — tweak filters  
-- `analyze XAUUSD.a which="Trend Following, Breakout Trading, Fair Value Gap (FVG) Strategy"`
-"""
+# HELP = """
+# **Examples**
+# - `analyze EURUSD.a` — uses default TFs and confidence filter  
+# - `analyze USDJPY.a M5,M15,H1` — explicit timeframes  
+# - `analyze GBPUSD.a minconf=0.25 lookback=180` — tweak filters  
+# - `analyze XAUUSD.a which="Trend Following, Breakout Trading, Fair Value Gap (FVG) Strategy"`
+# """
 
 def parse_freeform(msg: str):
     """
@@ -139,7 +139,8 @@ def save_session(history, rows, symbol):
 with gr.Blocks(title="FX Agent – Chat Console") as demo:
     gr.Markdown("# 💬 FX Agent – Chat Console")
     gr.Markdown(
-        "Chat with your MT5-backed analysis agent. Use the controls below **or** type commands like:\n\n" + HELP
+        "Chat with your MT5-backed analysis agent. Use the controls below **or** type commands like:\n\n" 
+        # + HELP
     )
 
     with gr.Row():
@@ -157,21 +158,6 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
 
     run_btn = gr.Button("⚙️ Fetch & Analyze", variant="primary")
 
-    # Chatbot uses OpenAI-style message dicts
-    chatbot = gr.Chatbot(height=400, type="messages")
-    cmd = gr.Textbox(label="Command (e.g. analyze USDJPY.a M15,H1 minconf=0.25)", placeholder="Type 'analyze SYMBOL ...' or chat freely and press Enter")
-
-    table = gr.Dataframe(
-        headers=["strategy","decision","confidence","timeframe","as_of_utc","extras"],
-        wrap=True,
-        interactive=False
-    )
-    rows_state = gr.State([])
-    selected_row_idx = gr.State(value=None)  # keep track of user selection
-    selection_info = gr.Markdown("**Selected row**: _none_")
-
-    # ---- Export & Session controls (moved to page bottom)
-
     # ---- Place Order panel (guarded)
     gr.Markdown("## ⚠️ Place Order (Guarded)")
     gr.Markdown(
@@ -186,6 +172,20 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
         po_confirm = gr.Checkbox(label="I understand this places a REAL market order in MT5.")
 
     place_btn = gr.Button("🚀 Place Order", variant="secondary")
+    table = gr.Dataframe(
+        headers=["strategy","decision","confidence","timeframe","as_of_utc","extras"],
+        wrap=True,
+        interactive=False
+    )
+    rows_state = gr.State([])
+    selected_row_idx = gr.State(value=None)  # keep track of user selection
+    selection_info = gr.Markdown("**Selected row**: _none_")
+
+    # Chatbot uses OpenAI-style message dicts
+    chatbot = gr.Chatbot(height=400, type="messages")
+    cmd = gr.Textbox(label="Command (e.g. analyze USDJPY.a M15,H1 minconf=0.25)", placeholder="Type 'analyze SYMBOL ...' or chat freely and press Enter")
+
+    # ---- Export & Session controls (moved to page bottom)
 
     # Button-driven Fetch & Analyze
     def on_click(symbol, tfs, which, min_conf, lookback, history):
