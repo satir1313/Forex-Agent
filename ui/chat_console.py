@@ -5,50 +5,42 @@ from datetime import datetime
 from agent.agent_bridge import evaluate as agent_evaluate
 from agent.agent_bridge import train_pipeline as agent_train_pipeline
 
-# Ensure project root on path so imports work when running directly
+# When executing this file directly (python ui/chat_console.py), Python's
+# import path will be the `ui/` directory, so top-level packages (like
+# `agent`) aren't found. Ensure the project root is on sys.path so
+# imports like `from agent.agent_bridge import ...` work either way.
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
-
 import gradio as gr
 import pandas as pd
 from typing import List, Optional
 
-from agent.agent_bridge import (
-    evaluate,
-    list_strategies,
-    place_order,
-    list_positions,
-    close_position,
-    chat as agent_chat,
-)
+from agent.agent_bridge import evaluate, list_strategies, place_order, list_positions, close_position, chat as agent_chat
 from config.settings import SETTINGS
 
 ALL_STRATS = list_strategies()
 DEFAULT_TFS = list(SETTINGS.default_timeframes)
-pos_refresh_counter = 0  # server-side counter for debugging refreshes
+# Server-side counter to help debug refreshes
+pos_refresh_counter = 0
 
-# Feature toggle for showing the training UI (set FX_ENABLE_TRAINING_UI=true in .env)
+# Feature toggle for showing the training UI (set FX_ENABLE_TRAINING_UI=true in your .env)
 _FEATURE_TRAINING_UI = os.getenv("FX_ENABLE_TRAINING_UI", "").strip().lower() in ("1", "true", "yes", "on")
 
-# ---------- Scoped CSS (layout only; no fundamental UI changes) ----------
+# ---------- tiny, scoped CSS to widen the right panel and prevent overflow ----------
 CSS = """
-/* Keep the top row strictly two columns (no wrapping into a second line) */
-.fx-top { gap: 12px !important; display: flex; flex-wrap: nowrap !important; align-items: flex-start; }
-
-/* Make left column narrower to free space for Model panel */
-.fx-left  { min-width: 440px; max-width: 640px; }
-
-/* Give Model panel more room */
-.fx-right { min-width: 760px; }
-
-/* Keep the small Model table tidy; prevent content from pushing layout */
+/* Give right (Model) column more breathing room & keep cells from expanding layout */
+.fx-top { gap: 12px !important; }
+.fx-left  { min-width: 520px; }
+.fx-right { min-width: 720px; }
 .fx-small-table table { table-layout: fixed; width: 100%; }
 .fx-small-table td, .fx-small-table th { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 """
 
-# ---------- Helpers ----------
 def parse_freeform(msg: str):
+    """
+    Tiny parser for freeform `analyze` commands.
+    """
     msg = (msg or "").strip()
     if not msg.lower().startswith("analyze"):
         return None
@@ -57,10 +49,12 @@ def parse_freeform(msg: str):
     minconf = SETTINGS.default_min_confidence
     lookback = SETTINGS.default_lookback_days
     which = None
+
     try:
         parts = msg.split()
         if len(parts) >= 2:
             symbol = parts[1]
+
         if "minconf=" in msg:
             minconf = float(msg.split("minconf=")[1].split()[0].replace("%", ""))
             if minconf > 1:
@@ -71,6 +65,7 @@ def parse_freeform(msg: str):
             after = msg.split("which=")[1]
             quote_str = after[after.index('"') + 1 : after.index('"', after.index('"') + 1)]
             which = [s.strip() for s in quote_str.split(",") if s.strip()]
+
         for token in parts[2:]:
             up = token.upper()
             if up[0] in ("M", "H", "D", "W") or up.startswith("MN"):
@@ -78,6 +73,7 @@ def parse_freeform(msg: str):
                 break
     except Exception:
         pass
+
     return dict(symbol=symbol, timeframes=tfs, min_conf=minconf, lookback=lookback, which=which)
 
 def run(symbol, tfs, which, min_conf, lookback):
@@ -156,13 +152,21 @@ def save_session(history, rows, symbol):
 # ---------- UI ----------
 with gr.Blocks(title="FX Agent – Chat Console", css=CSS) as demo:
     gr.Markdown("# 💬 FX Agent – Chat Console")
-    gr.Markdown("Chat with your MT5-backed analysis agent. Use the controls below **or** type commands like:\n\n")
+    gr.Markdown(
+        "Chat with your MT5-backed analysis agent. Use the controls below **or** type commands like:\n\n" 
+    )
 
-    # Top control panel: strictly two columns (no wrap)
+    # Top control panel: two-column layout
+    # NOTE: Only layout tweak here: left column scale reduced, right column widened.
     with gr.Row(elem_classes=["fx-top"]):
-        # LEFT COLUMN (narrower): symbol, timeframes, min conf, lookback
-        with gr.Column(scale=2, min_width=440, elem_classes=["fx-left"]):
-            symbol = gr.Textbox(label="Symbol", placeholder="e.g. USDJPY.a", scale=1, container=True)
+        # LEFT COLUMN: compact inputs (narrower to free space for Model panel)
+        with gr.Column(scale=2, min_width=520, elem_classes=["fx-left"]):
+            symbol = gr.Textbox(
+                label="Symbol",
+                placeholder="e.g. USDJPY.a",
+                scale=1,
+                container=True,
+            )
 
             tfs = gr.CheckboxGroup(
                 choices=["M1","M5","M15","M30","H1","H4","D1","W1"],
@@ -187,8 +191,8 @@ with gr.Blocks(title="FX Agent – Chat Console", css=CSS) as demo:
                     scale=1
                 )
 
-        # RIGHT COLUMN (wider): Model panel
-        with gr.Column(scale=5, min_width=760, elem_classes=["fx-right"]):
+        # RIGHT COLUMN: training UI + small model predictions table (wider)
+        with gr.Column(scale=4, min_width=720, elem_classes=["fx-right"]):
             if _FEATURE_TRAINING_UI:
                 gr.Markdown("## 🧪 Model")
                 train_btn = gr.Button("Train Model", variant="secondary")
@@ -197,15 +201,14 @@ with gr.Blocks(title="FX Agent – Chat Console", css=CSS) as demo:
                     headers=["strategy","decision","confidence","timeframe","as_of_utc","extras"],
                     wrap=True,
                     interactive=False,
-                    row_count=6,
+                    row_count=6,        # small table
                     elem_classes=["fx-small-table"]
                 )
                 model_pred_rows_state = gr.State([])
                 model_train_log = gr.Textbox(label="Training Console", value="", max_lines=8, show_copy_button=True)
             else:
-                gr.Markdown("### ")  # placeholder to keep layout balanced
+                gr.Markdown("### ")  # minimal placeholder to keep layout balanced
 
-    # Strategies filter (unchanged behavior)
     which = gr.CheckboxGroup(choices=ALL_STRATS, label="Strategies (leave empty for ALL)")
 
     run_btn = gr.Button("⚙️ Fetch & Analyze", variant="primary")
@@ -230,17 +233,16 @@ with gr.Blocks(title="FX Agent – Chat Console", css=CSS) as demo:
         interactive=False
     )
     rows_state = gr.State([])
-    selected_row_idx = gr.State(value=None)
+    selected_row_idx = gr.State(value=None)  # keep track of user selection
     selection_info = gr.Markdown("**Selected row**: _none_")
 
-    # Chatbot + freeform command
+    # Chatbot uses OpenAI-style message dicts
     chatbot = gr.Chatbot(height=400, type="messages")
-    cmd = gr.Textbox(
-        label="Command (e.g. analyze USDJPY.a M15,H1 minconf=0.25)",
-        placeholder="Type 'analyze SYMBOL ...' or chat freely and press Enter"
-    )
+    cmd = gr.Textbox(label="Command (e.g. analyze USDJPY.a M15,H1 minconf=0.25)", placeholder="Type 'analyze SYMBOL ...' or chat freely and press Enter")
 
-    # -------- Handlers --------
+    # ---- Export & Session controls (moved to page bottom)
+
+    # Button-driven Fetch & Analyze
     def on_click(symbol, tfs, which, min_conf, lookback, history):
         if not symbol:
             history = history + [
@@ -259,6 +261,7 @@ with gr.Blocks(title="FX Agent – Chat Console", css=CSS) as demo:
             {"role":"user","content":f"Analyze {symbol} ({', '.join(tfs)})"},
             {"role":"assistant","content":summary_md},
         ]
+
         import pandas as _pd
         ml_df = (_pd.DataFrame(ml_rows)[["strategy","decision","confidence","timeframe","as_of_utc","extras"]]
                  if ml_rows else _pd.DataFrame(columns=["strategy","decision","confidence","timeframe","as_of_utc","extras"]))
@@ -272,6 +275,7 @@ with gr.Blocks(title="FX Agent – Chat Console", css=CSS) as demo:
         outputs=[chatbot, table, rows_state, model_pred_table, model_pred_rows_state],
     )
 
+    # --- Train button wiring (small console log only) ---
     if _FEATURE_TRAINING_UI:
         def on_train(symbol, tfs, lookback):
             syms = [symbol] if symbol else []
@@ -281,8 +285,13 @@ with gr.Blocks(title="FX Agent – Chat Console", css=CSS) as demo:
                 return f"❌ {res.get('error','Unknown error')}"
             return (res.get("log") or "").strip() or "✅ Done."
 
-        train_btn.click(fn=on_train, inputs=[symbol, tfs, lookback], outputs=[model_train_log])
+        train_btn.click(
+            fn=on_train,
+            inputs=[symbol, tfs, lookback],
+            outputs=[model_train_log],
+        )
 
+    # Wrapper that always returns 5 outputs to satisfy binding
     def on_cmd2(cmd_text, history):
         parsed = parse_freeform(cmd_text)
         if parsed:
@@ -295,25 +304,63 @@ with gr.Blocks(title="FX Agent – Chat Console", css=CSS) as demo:
             )
             sym_update = gr.update(value=parsed.get("symbol")) if parsed.get("symbol") else gr.update()
             if df is None:
-                return "", ((history or []) + [{"role":"user","content":cmd_text},{"role":"assistant","content":summary_md}]), None, None, sym_update
-            return "", ((history or []) + [{"role":"user","content":cmd_text},{"role":"assistant","content":summary_md}]), df, rows, sym_update
+                return "", (
+                    (history or [])
+                    + [
+                        {"role": "user", "content": cmd_text},
+                        {"role": "assistant", "content": summary_md},
+                    ]
+                ), None, None, sym_update
+            return "", (
+                (history or [])
+                + [
+                    {"role": "user", "content": cmd_text},
+                    {"role": "assistant", "content": summary_md},
+                ]
+            ), df, rows, sym_update
 
-        # freeform chat path
+        # Freeform chat path
         try:
-            existing_msgs = [{"role": m.get("role"), "content": m.get("content")} for m in (history or []) if isinstance(m, dict) and m.get("role") and m.get("content")]
-            existing_msgs.append({"role":"user","content":cmd_text})
+            existing_msgs = []
+            for m in (history or []):
+                r = m.get("role") if isinstance(m, dict) else None
+                c = m.get("content") if isinstance(m, dict) else None
+                if r and c:
+                    existing_msgs.append({"role": r, "content": c})
+            existing_msgs.append({"role": "user", "content": cmd_text})
             res = agent_chat(messages=existing_msgs)
             if not res.get("ok"):
-                return "", ((history or []) + [{"role":"user","content":cmd_text},{"role":"assistant","content":f"�?O Error: {res.get('error','unknown') }"}]), gr.update(), gr.update(), gr.update()
+                return "", (
+                    (history or [])
+                    + [
+                        {"role": "user", "content": cmd_text},
+                        {"role": "assistant", "content": f"�?O Error: {res.get('error','unknown') }"},
+                    ]
+                ), gr.update(), gr.update(), gr.update()
             reply = res.get("reply") or ""
-            return "", ((history or []) + [{"role":"user","content":cmd_text},{"role":"assistant","content":reply}]), gr.update(), gr.update(), gr.update()
+            return "", (
+                (history or [])
+                + [
+                    {"role": "user", "content": cmd_text},
+                    {"role": "assistant", "content": reply},
+                ]
+            ), gr.update(), gr.update(), gr.update()
         except Exception as e:
-            return "", ((history or []) + [{"role":"user","content":cmd_text},{"role":"assistant","content":f"�?O Exception: {str(e)}"}]), gr.update(), gr.update(), gr.update()
+            return "", (
+                (history or [])
+                + [
+                    {"role": "user", "content": cmd_text},
+                    {"role": "assistant", "content": f"�?O Exception: {str(e)}"},
+                ]
+            ), gr.update(), gr.update(), gr.update()
 
+    # Use a wrapper that ensures we always return the expected 5 outputs
     cmd.submit(on_cmd2, inputs=[cmd, chatbot], outputs=[cmd, chatbot, table, rows_state, symbol])
 
+    # Table row selection → update selected_row_idx, selection_info and side
     def on_table_select(evt: gr.SelectData, rows):
         try:
+            # evt.index can be (row, col) for Dataframe; take row
             ridx = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
         except Exception:
             ridx = None
@@ -321,42 +368,78 @@ with gr.Blocks(title="FX Agent – Chat Console", css=CSS) as demo:
             return None, "**Selected row**: _none_", gr.update()
         sel = rows[ridx]
         msg = f"**Selected row**: #{ridx} — {sel['strategy']} → **{sel['decision']}**, {round(sel['confidence']*100,1)}%, {sel['timeframe']}"
+        # Default side from row decision (if valid)
         default_side = sel["decision"] if sel["decision"] in ("buy","sell") else None
         return ridx, msg, gr.update(value=default_side)
 
+    table.select(
+        on_table_select,
+        inputs=[rows_state],
+        outputs=[selected_row_idx, selection_info, po_side],
+    )
+
+    # Export CSV
+    def on_export(rows, symbol, history):
+        path = export_csv(rows, symbol)
+        if not path:
+            msg = "Export failed: Nothing to export yet."
+            history = history + [{"role":"assistant","content":msg}]
+            return history, gr.update(visible=True), msg
+        msg = f"Exported CSV to `{path}`"
+        history = history + [{"role":"assistant","content":msg}]
+        return history, gr.update(visible=True), msg
+
+
+    # Save Session
+    def on_save(history, rows, symbol):
+        path = save_session(history, rows, symbol)
+        msg = f"Saved session to `{path}`"
+        history = history + [{"role":"assistant","content":msg}]
+        return history, gr.update(visible=True), msg
+
+    # Place Order (guarded)
+    def on_place(symbol, rows, ridx, side, volume, sl, tp, confirmed, history):
+        if not confirmed:
+            history = history + [{"role":"assistant","content":"⚠️ Please tick **Confirm** to place the order."}]
+            return history
+        if symbol is None or symbol == "":
+            history = history + [{"role":"assistant","content":"Please enter a **Symbol** first."}]
+            return history
+        if ridx is None or rows is None or ridx >= len(rows):
+            history = history + [{"role":"assistant","content":"Select a **row** in the table first."}]
+            return history
+        sel = rows[int(ridx)]
+        # If side not chosen, use row decision (must be buy/sell)
+        side_final = (side or sel.get("decision") or "").lower()
+        if side_final not in ("buy","sell"):
+            history = history + [{"role":"assistant","content":"Selected row is not a buy/sell signal. Choose a **Side** explicitly."}]
+            return history
+        vol = float(volume or SETTINGS.default_volume)
+        sl_points = None if sl in ("", None) else int(sl)
+        tp_points = None if tp in ("", None) else int(tp)
+
+        res = place_order(symbol=symbol, side=side_final, volume=vol, sl_points=sl_points, tp_points=tp_points)
+        if not res.get("ok"):
+            history = history + [{"role":"assistant","content":f"❌ Order failed: {res.get('error','unknown')}"}]
+            return history
+        # Compose summary
+        summary = f"✅ Order sent: **{side_final.upper()} {symbol}** @ vol {vol}"
+        if sl_points: summary += f", SL {sl_points}p"
+        if tp_points: summary += f", TP {tp_points}p"
+        history = history + [{"role":"assistant","content":summary}]
+        return history
+
     place_btn.click(
-        lambda symbol, rows, ridx, side, volume, sl, tp, confirmed, history: on_place(symbol, rows, ridx, side, volume, sl, tp, confirmed, history),
+        on_place,
         inputs=[symbol, rows_state, selected_row_idx, po_side, po_volume, po_sl, po_tp, po_confirm, chatbot],
         outputs=[chatbot],
     )
 
-    def on_place(symbol, rows, ridx, side, volume, sl, tp, confirmed, history):
-        if not confirmed:
-            return history + [{"role":"assistant","content":"⚠️ Please tick **Confirm** to place the order."}]
-        if not symbol:
-            return history + [{"role":"assistant","content":"Please enter a **Symbol** first."}]
-        if ridx is None or rows is None or ridx >= len(rows):
-            return history + [{"role":"assistant","content":"Select a **row** in the table first."}]
-        sel = rows[int(ridx)]
-        side_final = (side or sel.get("decision") or "").lower()
-        if side_final not in ("buy","sell"):
-            return history + [{"role":"assistant","content":"Selected row is not a buy/sell signal. Choose a **Side** explicitly."}]
-        vol = float(volume or SETTINGS.default_volume)
-        sl_points = None if sl in ("", None) else int(sl)
-        tp_points = None if tp in ("", None) else int(tp)
-        res = place_order(symbol=symbol, side=side_final, volume=vol, sl_points=sl_points, tp_points=tp_points)
-        if not res.get("ok"):
-            return history + [{"role":"assistant","content":f"❌ Order failed: {res.get('error','unknown')}"}]
-        summary = f"✅ Order sent: **{side_final.upper()} {symbol}** @ vol {vol}"
-        if sl_points: summary += f", SL {sl_points}p"
-        if tp_points: summary += f", TP {tp_points}p"
-        return history + [{"role":"assistant","content":summary}]
-
-    table.select(on_table_select, inputs=[rows_state], outputs=[selected_row_idx, selection_info, po_side])
-
-    # ---- Positions (guarded)
+    # ---- Close Position panel (guarded)
     gr.Markdown("## Close Position (Guarded)")
-    gr.Markdown("Refresh open positions for the given symbol, select one, and confirm to close it.")
+    gr.Markdown(
+        "Refresh open positions for the given symbol, select one, and confirm to close it."
+    )
     with gr.Row():
         refresh_pos_btn = gr.Button("Refresh Positions", elem_id="refresh-positions-btn")
         filter_by_symbol = gr.Checkbox(label="Filter by symbol", value=False)
@@ -370,15 +453,19 @@ with gr.Blocks(title="FX Agent – Chat Console", css=CSS) as demo:
         interactive=False,
         row_count=7,
     )
+
     pos_rows_state = gr.State([])
     selected_pos_idx = gr.State(value=None)
     pos_selection_info = gr.Markdown("**Selected position**: _none_")
 
+    # Button to refresh positions (silent: does not touch chatbot)
     def on_refresh_positions_silent(symbol, filter_by_symbol):
         global pos_refresh_counter
         pos_refresh_counter += 1
+        # Only filter by the symbol textbox when explicitly requested
         res = list_positions(symbol=(symbol if (filter_by_symbol and symbol) else None))
         if not res.get("ok"):
+            # On failure, keep table empty but do not modify chat
             return None, [], None
         rows = res.get("positions", [])
         def _ptype(v):
@@ -387,19 +474,26 @@ with gr.Blocks(title="FX Agent – Chat Console", css=CSS) as demo:
                 return "BUY" if i == 0 else ("SELL" if i == 1 else str(i))
             except Exception:
                 return str(v)
-        view = [{
-            "ticket": r.get("ticket"),
-            "symbol": r.get("symbol"),
-            "type": _ptype(r.get("type")),
-            "volume": r.get("volume"),
-            "price_open": r.get("price_open"),
-            "profit": r.get("profit"),
-        } for r in rows]
+        view = []
+        for r in rows:
+            view.append({
+                "ticket": r.get("ticket"),
+                "symbol": r.get("symbol"),
+                "type": _ptype(r.get("type")),
+                "volume": r.get("volume"),
+                "price_open": r.get("price_open"),
+                "profit": r.get("profit"),
+            })
         df = pd.DataFrame(view) if view else None
         return df, view, None
 
-    refresh_pos_btn.click(on_refresh_positions_silent, inputs=[symbol, filter_by_symbol], outputs=[pos_table, pos_rows_state, selected_pos_idx])
+    refresh_pos_btn.click(
+        on_refresh_positions_silent,
+        inputs=[symbol, filter_by_symbol],
+        outputs=[pos_table, pos_rows_state, selected_pos_idx],
+    )
 
+    # Selection handler for positions table
     def on_pos_select(evt: gr.SelectData, rows):
         try:
             ridx = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
@@ -411,57 +505,92 @@ with gr.Blocks(title="FX Agent – Chat Console", css=CSS) as demo:
         msg = f"**Selected position**: ticket {sel.get('ticket')} {sel.get('symbol')} {sel.get('type')} vol {sel.get('volume')}"
         return ridx, msg
 
-    pos_table.select(on_pos_select, inputs=[pos_rows_state], outputs=[selected_pos_idx, pos_selection_info])
+    pos_table.select(
+        on_pos_select,
+        inputs=[pos_rows_state],
+        outputs=[selected_pos_idx, pos_selection_info],
+    )
 
+    # Close selected position
     def on_close(symbol, rows, ridx, volume, confirmed, history):
         if not confirmed:
-            return history + [{"role":"assistant","content":"Please tick **Confirm** to close the position."}]
+            history = history + [{"role":"assistant","content":"Please tick **Confirm** to close the position."}]
+            return history
         if ridx is None or rows is None or ridx >= len(rows):
-            return history + [{"role":"assistant","content":"Select a **position** first and refresh if needed."}]
+            history = history + [{"role":"assistant","content":"Select a **position** first and refresh if needed."}]
+            return history
         sel = rows[int(ridx)]
         ticket = sel.get("ticket")
         if ticket is None:
-            return history + [{"role":"assistant","content":"Selected row has no ticket."}]
+            history = history + [{"role":"assistant","content":"Selected row has no ticket."}]
+            return history
         v = None if volume in (None, "") else float(volume)
         res = close_position(ticket=int(ticket), volume=v)
         if not res.get("ok"):
-            return history + [{"role":"assistant","content":f"Close failed: {res.get('error','unknown')}"}]
+            history = history + [{"role":"assistant","content":f"Close failed: {res.get('error','unknown')}"}]
+            return history
         summary = f"Closed position {ticket} on {sel.get('symbol')}"
         if v:
             summary += f" (volume {v})"
-        return history + [{"role":"assistant","content":summary}]
+        history = history + [{"role":"assistant","content":summary}]
+        return history
 
-    close_btn.click(on_close, inputs=[symbol, pos_rows_state, selected_pos_idx, close_vol, close_confirm, chatbot], outputs=[chatbot])
+    close_btn.click(
+        on_close,
+        inputs=[symbol, pos_rows_state, selected_pos_idx, close_vol, close_confirm, chatbot],
+        outputs=[chatbot],
+    )
 
     gr.Markdown("———")
-    gr.Markdown("_Safety note_: Market orders are **live** on your logged-in MT5 terminal. Use small volumes while testing.")
+    gr.Markdown(
+        "_Safety note_: Market orders are **live** on your logged-in MT5 terminal. Use small volumes while testing."
+    )
 
+    # Place export & session controls at the bottom of the page (modal-based feedback)
     with gr.Row():
         export_btn = gr.Button("💾 Export CSV")
         save_btn = gr.Button("🧷 Save Session")
-
+   
     with gr.Column(visible=False) as export_modal:
         export_modal_title = gr.Markdown("### Result")
         export_modal_msg = gr.Markdown("")
         export_modal_close = gr.Button("Close")
 
-    export_btn.click(lambda rows, symbol, history: on_export(rows, symbol, history), inputs=[rows_state, symbol, chatbot], outputs=[chatbot, export_modal, export_modal_msg])
-    save_btn.click(lambda history, rows, symbol: on_save(history, rows, symbol), inputs=[chatbot, rows_state, symbol], outputs=[chatbot, export_modal, export_modal_msg])
+    # Attach handlers for bottom export/save controls to show modal
+    export_btn.click(on_export, inputs=[rows_state, symbol, chatbot], outputs=[chatbot, export_modal, export_modal_msg])
+    save_btn.click(on_save, inputs=[chatbot, rows_state, symbol], outputs=[chatbot, export_modal, export_modal_msg])
 
+    # Close modal handler
     def _hide_modal():
         return gr.update(visible=False), ""
 
     export_modal_close.click(fn=_hide_modal, inputs=[], outputs=[export_modal, export_modal_msg])
 
-    # Auto-refresh positions (kept intact)
-    auto_refresh_checkbox = gr.Checkbox(label="Auto-refresh positions", value=True)
+    auto_refresh_checkbox = gr.Checkbox(
+        label="Auto-refresh positions",
+        value=True
+    )
+
     refresh_timer = gr.Timer(1.0, active=True)
 
     def toggle_timer(val: bool):
+        # val is True if box checked, False if unchecked
         return gr.update(active=val)
 
-    auto_refresh_checkbox.change(fn=toggle_timer, inputs=auto_refresh_checkbox, outputs=refresh_timer)
-    refresh_timer.tick(fn=on_refresh_positions_silent, inputs=[symbol, filter_by_symbol], outputs=[pos_table, pos_rows_state, selected_pos_idx])
+    # wire checkbox → timer
+    auto_refresh_checkbox.change(
+        fn=toggle_timer,
+        inputs=auto_refresh_checkbox,
+        outputs=refresh_timer,
+    )
+
+    # what to do on each tick
+    refresh_timer.tick(
+        fn=on_refresh_positions_silent,
+        inputs=[symbol, filter_by_symbol],
+        outputs=[pos_table, pos_rows_state, selected_pos_idx],
+    )
+
 
 if __name__ == "__main__":
     demo.launch()
