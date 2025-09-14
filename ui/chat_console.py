@@ -22,7 +22,7 @@ DEFAULT_TFS = list(SETTINGS.default_timeframes)
 # Server-side counter to help debug refreshes
 pos_refresh_counter = 0
 
-# Toggle for showing training UI
+# Feature toggle for showing the training UI (set FX_ENABLE_TRAINING_UI=true in your .env)
 _FEATURE_TRAINING_UI = os.getenv("FX_ENABLE_TRAINING_UI", "").strip().lower() in ("1", "true", "yes", "on")
 
 def parse_freeform(msg: str):
@@ -171,12 +171,19 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
                     scale=1
                 )
 
-        # RIGHT COLUMN: retrain UI (behind feature toggle) or placeholder
+        # RIGHT COLUMN: training UI (behind toggle) + small model predictions table
         with gr.Column(scale=2, min_width=360):
             if _FEATURE_TRAINING_UI:
                 gr.Markdown("## 🧪 Model")
-                retrain_btn = gr.Button("🧠 Retrain Model", variant="secondary")
-                # NOTE: no click handler wired — UI shell only
+                train_btn = gr.Button("Train Model", variant="secondary")
+                gr.Markdown("#### Model Predictions")
+                model_pred_table = gr.Dataframe(
+                    headers=["strategy","decision","confidence","timeframe","as_of_utc","extras"],
+                    wrap=True,
+                    interactive=False,
+                    row_count=5,        # small table
+                )
+                model_pred_rows_state = gr.State([])  # will wire later
             else:
                 gr.Markdown("### ")  # minimal placeholder to keep layout balanced
 
