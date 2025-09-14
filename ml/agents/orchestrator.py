@@ -1,106 +1,135 @@
+# ml/agents/orchestrator.py
 from __future__ import annotations
 
-"""
-Orchestrator Agent: Delegates the end-to-end pipeline in the right order.
-
-Default steps: data -> features -> labels -> train -> eval
-
-Usage examples:
-  # Full run with config defaults
-  python -m ml.agents.orchestrator
-
-  # Limit to M5 and quick lookback
-  python -m ml.agents.orchestrator --timeframes M5 --lookback-days 30
-
-  # Run a subset of steps
-  python -m ml.agents.orchestrator --steps data,features,labels
-"""
-
 import argparse
+import json
 import os
 import sys
-from typing import Any, Dict, List
+from datetime import datetime, timezone
+from typing import List, Dict, Any
 
-import yaml
-
+# Ensure project root for relative imports when run from anywhere
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from ml.agents.data_agent import run as data_run
-from ml.agents.feature_agent import run as feat_run
-from ml.agents.label_agent import run as label_run
-from ml.agents.train_agent import run as train_run
-from ml.agents.eval_agent import run as eval_run
+# Agents (we call their run() directly)
+from ml.agents import data_agent, feature_agent, label_agent, train_agent, eval_agent
 
+DEFAULT_STEPS = ("data", "features", "labels", "train", "eval")
+
+# ---------- helpers ----------
+def _cfg_path() -> str:
+    return os.path.join(_PROJECT_ROOT, "ml", "config", "train.yaml")
 
 def load_defaults() -> Dict[str, Any]:
-    cfg_path = os.path.join(_PROJECT_ROOT, "ml", "config", "train.yaml")
+    path = _cfg_path()
     try:
-        with open(cfg_path, "r", encoding="utf-8") as f:
-            cfg = yaml.safe_load(f) or {}
+        import yaml  # type: ignore
+        with open(path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
     except Exception:
-        cfg = {}
-    return cfg
+        return {}
 
+def parse_steps(steps_csv: str) -> List[str]:
+    raw = [s.strip().lower() for s in (steps_csv or "").split(",") if s.strip()]
+    return [s for s in raw if s in DEFAULT_STEPS] or list(DEFAULT_STEPS)
 
-DEFAULT_STEPS = ["data", "features", "labels", "train", "eval"]
+def _now_utc_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+def _ensure_dir(p: str) -> None:
+    os.makedirs(p, exist_ok=True)
 
-def parse_steps(s: str | None) -> List[str]:
-    if not s:
-        return list(DEFAULT_STEPS)
-    items = [x.strip().lower() for x in s.split(",") if x.strip()]
-    return [x for x in items if x in set(DEFAULT_STEPS)]
+def _deploy_active(registry_dir: str, symbol: str, timeframe: str, horizons: List[int]) -> None:
+    """
+    For each horizon, pick the most recently modified version folder and write active.json.
+    Layout: {registry_dir}/{symbol}/{TF}/{h}/{version}/...
+    """
+    base_tf = os.path.join(registry_dir, symbol, timeframe.upper())
+    for h in horizons:
+        h_dir = os.path.join(base_tf, str(int(h)))
+        if not os.path.isdir(h_dir):
+            continue
+        # find version subdirs
+        versions = [d for d in os.listdir(h_dir) if os.path.isdir(os.path.join(h_dir, d))]
+        if not versions:
+            continue
+        # pick latest by mtime
+        versions.sort(key=lambda v: os.path.getmtime(os.path.join(h_dir, v)), reverse=True)
+        chosen = versions[0]
+        active_path = os.path.join(h_dir, "active.json")
+        with open(active_path, "w", encoding="utf-8") as f:
+            json.dump({"version": chosen, "updated_utc": _now_utc_iso()}, f, indent=2)
+        print(f"[orchestrator] deployed active.json → {symbol}/{timeframe}/{h} -> {chosen}")
 
-
-def run(
-    symbols: List[str],
-    timeframes: List[str],
-    lookback_days: int,
-    data_dir: str,
-    registry_dir: str,
-    steps: List[str],
-    eval_frac: float,
-) -> None:
-    print(
-        f"[orchestrator] Start symbols={symbols} tfs={timeframes} lookback_days={lookback_days} "
-        f"steps={steps} data_dir={data_dir} registry_dir={registry_dir} eval_frac={eval_frac}"
-    )
+# ---------- main run ----------
+def run(symbols: List[str],
+        timeframes: List[str],
+        lookback_days: int,
+        data_dir: str,
+        registry_dir: str,
+        steps: List[str],
+        eval_frac: float = 0.1) -> None:
+    cfg = load_defaults()
+    horizons_map = cfg.get("horizons", {}) or {}
+    print(f"[orchestrator] start steps={steps} symbols={symbols} tfs={timeframes} lookback={lookback_days}")
+    print(f"[orchestrator] data_dir={data_dir} registry_dir={registry_dir}")
 
     if "data" in steps:
         try:
-            data_run(symbols=symbols, timeframes=timeframes, lookback_days=lookback_days, data_dir=data_dir)
+            data_agent.run(symbols=symbols, timeframes=timeframes, lookback_days=int(lookback_days), data_dir=data_dir)
         except Exception as e:
             print(f"[orchestrator] data step failed: {e}")
 
     if "features" in steps:
         try:
-            feat_run(symbols=symbols, timeframes=timeframes, data_dir=data_dir)
+            feature_agent.run(symbols=symbols, timeframes=timeframes, data_dir=data_dir)
         except Exception as e:
             print(f"[orchestrator] features step failed: {e}")
 
     if "labels" in steps:
         try:
-            label_run(symbols=symbols, timeframes=timeframes, data_dir=data_dir)
+            label_agent.run(symbols=symbols, timeframes=timeframes, data_dir=data_dir)
         except Exception as e:
             print(f"[orchestrator] labels step failed: {e}")
 
     if "train" in steps:
         try:
-            train_run(symbols=symbols, timeframes=timeframes, data_dir=data_dir, registry_dir=registry_dir)
+            train_agent.run(symbols=symbols, timeframes=timeframes, data_dir=data_dir, registry_dir=registry_dir)
         except Exception as e:
             print(f"[orchestrator] train step failed: {e}")
 
     if "eval" in steps:
         try:
-            # Promote on improvement by default
-            eval_run(symbols=symbols, timeframes=timeframes, data_dir=data_dir, registry_dir=registry_dir,
-                     eval_frac=eval_frac, promote=True, min_delta=0.01, metric="balanced_accuracy")
+            eval_agent.run(symbols=symbols, timeframes=timeframes, data_dir=data_dir, registry_dir=registry_dir, eval_frac=float(eval_frac))
         except Exception as e:
             print(f"[orchestrator] eval step failed: {e}")
 
+    # Light deploy (write active.json) so serving can find models
+    for s in symbols:
+        for tf in timeframes:
+            hs = [int(h) for h in horizons_map.get(tf.upper(), [])] or []
+            if hs:
+                _deploy_active(registry_dir, s, tf, hs)
+
     print("[orchestrator] Done.")
+
+# ---------- for UI: one-call train+deploy ----------
+def train_run(symbols: List[str],
+              timeframes: List[str],
+              lookback_days: int,
+              data_dir: str,
+              registry_dir: str,
+              eval_frac: float = 0.1) -> None:
+    steps = list(DEFAULT_STEPS)  # data -> features -> labels -> train -> eval
+    run(symbols=symbols,
+        timeframes=timeframes,
+        lookback_days=int(lookback_days),
+        data_dir=data_dir,
+        registry_dir=registry_dir,
+        steps=steps,
+        eval_frac=float(eval_frac))
 
 
 def main(argv: List[str] | None = None) -> None:
@@ -112,22 +141,19 @@ def main(argv: List[str] | None = None) -> None:
     parser.add_argument("--data-dir", default=defaults.get("data_dir", os.path.join("ml", "data")))
     parser.add_argument("--registry-dir", default=os.path.join("ml", "models", "registry"))
     parser.add_argument("--steps", default=",".join(DEFAULT_STEPS), help="Comma-separated: data,features,labels,train,eval")
-    parser.add_argument("--eval-frac", type=float, default=0.15)
+    parser.add_argument("--eval-frac", type=float, default=0.1)
     args = parser.parse_args(argv)
 
-    symbols = list(args.symbols) if args.symbols else ["USDJPY.a", "EURAUD.a"]
-    timeframes = [tf.upper() for tf in (args.timeframes or ["M5", "M15", "H1"])]
-    steps = parse_steps(args.steps)
-    run(
-        symbols=symbols,
+    symbols = [*args.symbols] if args.symbols else (defaults.get("symbols") or [])
+    timeframes = [tf.upper() for tf in (args.timeframes or (defaults.get("timeframes") or []))]
+
+    run(symbols=symbols,
         timeframes=timeframes,
         lookback_days=int(args.lookback_days),
         data_dir=args.data_dir,
         registry_dir=args.registry_dir,
-        steps=steps,
-        eval_frac=float(args.eval_frac),
-    )
-
+        steps=parse_steps(args.steps),
+        eval_frac=float(args.eval_frac))
 
 if __name__ == "__main__":
     main()

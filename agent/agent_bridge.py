@@ -1,15 +1,20 @@
-import traceback
-from typing import List, Dict, Any, Optional
-from config.settings import SETTINGS
-
-# Import your engine
-import importlib
-ga = importlib.import_module("gpt_agent")
+# agent/agent_bridge.py
+import io
 import os
 import json
+import traceback
+import contextlib
+from typing import List, Dict, Any, Optional
 
-# ML serving (Arvid v1)
+from config.settings import SETTINGS
+
+# Import your engine without circular deps
+import importlib
+ga = importlib.import_module("gpt_agent")
+
+# --- Optional ML serving (Arvid v1) ---
 try:
+    # We place infer.py under ml/serving/infer.py (see file below)
     from ml.serving.infer import infer_timeframes as arvid_infer_timeframes
 except Exception:
     arvid_infer_timeframes = None  # type: ignore
@@ -21,6 +26,7 @@ try:
 except Exception:
     pass
 
+
 def mt5_connect_safe() -> Dict[str, Any]:
     try:
         res = ga.mt5_connect()
@@ -30,11 +36,13 @@ def mt5_connect_safe() -> Dict[str, Any]:
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+
 def ensure_symbol(symbol: str) -> Dict[str, Any]:
     try:
         return ga.mt5_symbol_enable(symbol)
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
 
 def list_strategies() -> List[str]:
     try:
@@ -51,6 +59,7 @@ def list_strategies() -> List[str]:
         pass
     return []
 
+
 def evaluate(
     symbol: str,
     timeframes: List[str],
@@ -60,7 +69,8 @@ def evaluate(
 ) -> Dict[str, Any]:
     """
     Run evaluate_strategies on each timeframe, flatten results,
-    filter by min_confidence and drop 'no-trade'.
+    filter by min_confidence and drop 'no-trade'. Then (if available)
+    append one Arvid v1 ML row per TF.
     """
     out_rows: List[Dict[str, Any]] = []
     errors: List[str] = []
@@ -72,6 +82,7 @@ def evaluate(
     if not s.get("ok"):
         return {"ok": False, "error": f"Symbol enable failed: {s.get('error', 'unknown')}"}
 
+    # --- Rule-based strategies first (unchanged) ---
     for tf in timeframes:
         try:
             res = ga.evaluate_strategies(symbol=symbol, timeframe=tf, lookback_days=lookback_days, which=which)
@@ -95,10 +106,11 @@ def evaluate(
             errors.append(f"{tf}: {traceback.format_exc(limit=1)}")
 
     out_rows.sort(key=lambda x: x["confidence"], reverse=True)
-    # Attempt to append Arvid v1 model signals (if serving available and models present)
+
+    # --- Append Arvid v1 ML rows (one per TF) if serving available ---
     try:
         if arvid_infer_timeframes is not None:
-            # Load horizons map from ML config if available
+            # Load per-TF horizons map from ml/config/train.yaml if present
             horizons_map = {}
             cfg_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "ml", "config", "train.yaml")
             if os.path.isfile(cfg_path):
@@ -107,11 +119,10 @@ def evaluate(
                     with open(cfg_path, "r", encoding="utf-8") as f:
                         cfg = yaml.safe_load(f) or {}
                     horizons_map = cfg.get("horizons", {}) or {}
-                except Exception:
-                    horizons_map = {}
-            # Use best_eval policy by default to pick one horizon per TF
+                except Exception as e:
+                    errors.append(f"config/train.yaml parse: {e}")
+
             arvid_rows = arvid_infer_timeframes(symbol, timeframes, horizons_map, select_policy="best_eval")
-            # Filter with same min_confidence and drop no-trade if any
             for r in arvid_rows:
                 if r.get("decision") == "no-trade":
                     continue
@@ -119,16 +130,15 @@ def evaluate(
                     continue
                 out_rows.append(r)
     except Exception as e:
-        errors.append(f"Arvid v1: {str(e)}")
+        errors.append(f"Arvid v1 serving: {str(e)}")
 
     out_rows.sort(key=lambda x: x["confidence"], reverse=True)
     return {"ok": True, "rows": out_rows, "errors": errors}
 
+
 def place_order(symbol: str, side: str, volume: float,
                 sl_points: int | None = None, tp_points: int | None = None) -> Dict[str, Any]:
-    """
-    Guarded passthrough to engine mt5_place_order.
-    """
+    """Guarded passthrough to engine mt5_place_order."""
     try:
         c = mt5_connect_safe()
         if not c.get("ok"):
@@ -147,6 +157,7 @@ def place_order(symbol: str, side: str, volume: float,
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+
 def list_positions(symbol: Optional[str] = None) -> Dict[str, Any]:
     try:
         c = mt5_connect_safe()
@@ -156,6 +167,7 @@ def list_positions(symbol: Optional[str] = None) -> Dict[str, Any]:
         return res
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
 
 def close_position(ticket: int, volume: Optional[float] = None) -> Dict[str, Any]:
     try:
@@ -169,10 +181,34 @@ def close_position(ticket: int, volume: Optional[float] = None) -> Dict[str, Any
 
 
 def chat(messages: List[Dict[str, Any]], temperature: float = 0.2) -> Dict[str, Any]:
-    """Proxy to gpt_agent.chat_once for the web UI to call.
-    `messages` is a list of role/content dicts; returns {'ok': True, 'reply': str, 'messages': [...]}
-    """
+    """Proxy to gpt_agent.chat_once for the web UI to call."""
     try:
         return ga.chat_once(messages=messages, temperature=temperature)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# ---------- NEW: Training bridge for the UI ----------
+def train_pipeline(symbols: List[str], timeframes: List[str], lookback_days: int,
+                   data_dir: str = os.path.join("ml", "data"),
+                   registry_dir: str = os.path.join("ml", "models", "registry")) -> Dict[str, Any]:
+    """
+    Calls the orchestrator to: data -> features -> labels -> train -> eval -> deploy(active.json).
+    Captures stdout into a single text blob for the UI console.
+    """
+    try:
+        import ml.agents.orchestrator as orch  # local import to avoid heavy import at module load
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            orch.train_run(
+                symbols=[s for s in symbols if s],
+                timeframes=[tf.upper() for tf in timeframes if tf],
+                lookback_days=int(lookback_days),
+                data_dir=data_dir,
+                registry_dir=registry_dir,
+                eval_frac=0.1,
+            )
+        return {"ok": True, "log": buf.getvalue().strip()}
     except Exception as e:
         return {"ok": False, "error": str(e)}

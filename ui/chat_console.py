@@ -2,6 +2,8 @@ import os
 import sys
 import json
 from datetime import datetime
+from agent.agent_bridge import evaluate as agent_evaluate
+from agent.agent_bridge import train_pipeline as agent_train_pipeline
 
 # When executing this file directly (python ui/chat_console.py), Python's
 # import path will be the `ui/` directory, so top-level packages (like
@@ -73,14 +75,14 @@ def run(symbol, tfs, which, min_conf, lookback):
         min_confidence=float(min_conf),
     )
     if not res.get("ok"):
-        return None, f"❌ {res.get('error','Unknown error')}", None
+        return None, f"❌ {res.get('error','Unknown error')}", None, None
 
     rows = res.get("rows", [])
     if not rows:
         msg = "No qualifying signals (filtered by confidence and no-trade). Try lowering min confidence or adding timeframes."
         if res.get("errors"):
             msg += f"\nEngine notes: {res['errors']}"
-        return None, msg, None
+        return None, msg, None, None
 
     top_buy = next((r for r in rows if r["decision"] == "buy"), None)
     top_sell = next((r for r in rows if r["decision"] == "sell"), None)
@@ -95,13 +97,20 @@ def run(symbol, tfs, which, min_conf, lookback):
     df = pd.DataFrame(rows)[["strategy","decision","confidence","timeframe","as_of_utc","extras"]]
     df["confidence"] = (df["confidence"]*100.0).round(2)
 
+    # small table: only ML predictions (Arvid v1)
+    ml_rows = [r for r in rows if str(r.get("strategy")) == "Arvid v1"]
+    ml_df = (pd.DataFrame(ml_rows)[["strategy","decision","confidence","timeframe","as_of_utc","extras"]]
+             if ml_rows else pd.DataFrame(columns=["strategy","decision","confidence","timeframe","as_of_utc","extras"]))
+    if not ml_df.empty:
+        ml_df["confidence"] = (ml_df["confidence"]*100.0).round(2)
+
     md = "### Results\n"
     for r in rows[:10]:
         md += f"- **{r['strategy']}** → **{r['decision']}**, {round(r['confidence']*100,1)}%, {r['timeframe']}\n"
     if res.get("errors"):
         md += f"\n_Engine notes_: {res['errors']}"
 
-    return df, "<br/>".join(summary) + "<br/><br/>" + md, rows
+    return df, "<br/>".join(summary) + "<br/><br/>" + md, rows, ml_rows
 
 # ---------- Export helpers ----------
 def _timestamp() -> str:
@@ -183,7 +192,8 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
                     interactive=False,
                     row_count=5,        # small table
                 )
-                model_pred_rows_state = gr.State([])  # will wire later
+                model_pred_rows_state = gr.State([])
+                model_train_log = gr.Textbox(label="Training Console", value="", max_lines=8, show_copy_button=True)
             else:
                 gr.Markdown("### ")  # minimal placeholder to keep layout balanced
 
@@ -227,25 +237,47 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
                 {"role":"user","content":"Fetch & Analyze"},
                 {"role":"assistant","content":"Please enter a symbol (e.g., USDJPY.a)."},
             ]
-            return history, None, None
-        df, summary_md, rows = run(symbol, tfs, which, min_conf, lookback)
+            return history, None, None, None, None
+        df, summary_md, rows, ml_rows = run(symbol, tfs, which, min_conf, lookback)
         if df is None:
             history = history + [
                 {"role":"user","content":f"Analyze {symbol}"},
                 {"role":"assistant","content":summary_md},
             ]
-            return history, None, None
+            return history, None, None, None
         history = history + [
             {"role":"user","content":f"Analyze {symbol} ({', '.join(tfs)})"},
             {"role":"assistant","content":summary_md},
         ]
-        return history, df, rows
+
+        import pandas as _pd
+        ml_df = (_pd.DataFrame(ml_rows)[["strategy","decision","confidence","timeframe","as_of_utc","extras"]]
+                 if ml_rows else _pd.DataFrame(columns=["strategy","decision","confidence","timeframe","as_of_utc","extras"]))
+        if not ml_df.empty:
+            ml_df["confidence"] = (ml_df["confidence"]*100.0).round(2)
+        return history, df, rows, ml_df, ml_rows
 
     run_btn.click(
         fn=on_click,
         inputs=[symbol, tfs, which, min_conf, lookback, chatbot],
-        outputs=[chatbot, table, rows_state],
+        outputs=[chatbot, table, rows_state, model_pred_table, model_pred_rows_state],
     )
+
+    # --- Train button wiring (small console log only) ---
+    if _FEATURE_TRAINING_UI:
+        def on_train(symbol, tfs, lookback):
+            syms = [symbol] if symbol else []
+            tfsu = [tf.upper() for tf in (tfs or [])]
+            res = agent_train_pipeline(syms, tfsu, int(lookback))
+            if not res.get("ok"):
+                return f"❌ {res.get('error','Unknown error')}"
+            return (res.get("log") or "").strip() or "✅ Done."
+
+        train_btn.click(
+            fn=on_train,
+            inputs=[symbol, tfs, lookback],
+            outputs=[model_train_log],
+        )
 
     # Wrapper that always returns 5 outputs to satisfy binding
     def on_cmd2(cmd_text, history):
