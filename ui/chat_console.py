@@ -22,13 +22,8 @@ DEFAULT_TFS = list(SETTINGS.default_timeframes)
 # Server-side counter to help debug refreshes
 pos_refresh_counter = 0
 
-# HELP = """
-# **Examples**
-# - `analyze EURUSD.a` — uses default TFs and confidence filter  
-# - `analyze USDJPY.a M5,M15,H1` — explicit timeframes  
-# - `analyze GBPUSD.a minconf=0.25 lookback=180` — tweak filters  
-# - `analyze XAUUSD.a which="Trend Following, Breakout Trading, Fair Value Gap (FVG) Strategy"`
-# """
+# Toggle for showing training UI
+_FEATURE_TRAINING_UI = os.getenv("FX_ENABLE_TRAINING_UI", "").strip().lower() in ("1", "true", "yes", "on")
 
 def parse_freeform(msg: str):
     """
@@ -140,19 +135,50 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
     gr.Markdown("# 💬 FX Agent – Chat Console")
     gr.Markdown(
         "Chat with your MT5-backed analysis agent. Use the controls below **or** type commands like:\n\n" 
-        # + HELP
     )
 
+    # Top control panel: two-column layout
     with gr.Row():
-        symbol = gr.Textbox(label="Symbol", placeholder="e.g. USDJPY.a", scale=2)
-        tfs = gr.CheckboxGroup(
-            choices=["M1","M5","M15","M30","H1","H4","D1","W1"],
-            value=list(SETTINGS.default_timeframes),
-            label="Timeframes",
-            scale=2
-        )
-        min_conf = gr.Slider(0, 1, value=SETTINGS.default_min_confidence, step=0.01, label="Min Confidence")
-        lookback = gr.Number(value=SETTINGS.default_lookback_days, precision=0, label="Lookback Days")
+        # LEFT COLUMN: compact inputs
+        with gr.Column(scale=3, min_width=680):
+            symbol = gr.Textbox(
+                label="Symbol",
+                placeholder="e.g. USDJPY.a",
+                scale=1,
+                container=True,
+            )
+
+            tfs = gr.CheckboxGroup(
+                choices=["M1","M5","M15","M30","H1","H4","D1","W1"],
+                value=list(SETTINGS.default_timeframes),
+                label="Timeframes",
+                scale=1
+            )
+
+            with gr.Row():
+                min_conf = gr.Slider(
+                    minimum=0,
+                    maximum=1,
+                    value=SETTINGS.default_min_confidence,
+                    step=0.01,
+                    label="Min Confidence",
+                    scale=2
+                )
+                lookback = gr.Number(
+                    value=SETTINGS.default_lookback_days,
+                    precision=0,
+                    label="Lookback Days",
+                    scale=1
+                )
+
+        # RIGHT COLUMN: retrain UI (behind feature toggle) or placeholder
+        with gr.Column(scale=2, min_width=360):
+            if _FEATURE_TRAINING_UI:
+                gr.Markdown("## 🧪 Model")
+                retrain_btn = gr.Button("🧠 Retrain Model", variant="secondary")
+                # NOTE: no click handler wired — UI shell only
+            else:
+                gr.Markdown("### ")  # minimal placeholder to keep layout balanced
 
     which = gr.CheckboxGroup(choices=ALL_STRATS, label="Strategies (leave empty for ALL)")
 
@@ -373,8 +399,8 @@ with gr.Blocks(title="FX Agent – Chat Console") as demo:
     pos_table = gr.Dataframe(
         headers=["ticket","symbol","type","volume","price_open","profit"],
         wrap=True,
-    interactive=False,
-    row_count=7,
+        interactive=False,
+        row_count=7,
     )
 
     pos_rows_state = gr.State([])
