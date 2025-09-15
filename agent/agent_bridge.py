@@ -189,21 +189,41 @@ def chat(messages: List[Dict[str, Any]], temperature: float = 0.2) -> Dict[str, 
 
 
 # ---------- NEW: Training bridge for the UI ----------
+# ---------- NEW: Training bridge for the UI ----------
 def train_pipeline(symbols: List[str], timeframes: List[str], lookback_days: int,
                    data_dir: str = os.path.join("ml", "data"),
                    registry_dir: str = os.path.join("ml", "models", "registry")) -> Dict[str, Any]:
     """
     Calls the orchestrator to: data -> features -> labels -> train -> eval -> deploy(active.json).
     Captures stdout into a single text blob for the UI console.
+    Accepts single or comma/semicolon-separated symbols and expands them.
     """
     try:
         import ml.agents.orchestrator as orch  # local import to avoid heavy import at module load
 
+        # --- normalize symbols/timeframes ---
+        def _split_symbols(items: List[str]) -> List[str]:
+            flat: List[str] = []
+            for s in items or []:
+                if not s:
+                    continue
+                if isinstance(s, str):
+                    parts = [p.strip() for p in s.replace(";", ",").split(",") if p.strip()]
+                    flat.extend(parts)
+                else:
+                    flat.append(str(s))
+            # de-dup, keep order
+            return list(dict.fromkeys(flat))
+
+        sym_list = _split_symbols(symbols)
+        tf_list = [tf.upper() for tf in (timeframes or []) if tf]
+
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
+            print(f"[agent_bridge] train_pipeline: symbols={sym_list} tfs={tf_list} lookback={int(lookback_days)}")
             orch.train_run(
-                symbols=[s for s in symbols if s],
-                timeframes=[tf.upper() for tf in timeframes if tf],
+                symbols=sym_list,
+                timeframes=tf_list,
                 lookback_days=int(lookback_days),
                 data_dir=data_dir,
                 registry_dir=registry_dir,
@@ -212,3 +232,4 @@ def train_pipeline(symbols: List[str], timeframes: List[str], lookback_days: int
         return {"ok": True, "log": buf.getvalue().strip()}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+

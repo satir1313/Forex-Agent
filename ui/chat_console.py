@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import pandas as _pd
 from datetime import datetime
 from agent.agent_bridge import evaluate as agent_evaluate
 from agent.agent_bridge import train_pipeline as agent_train_pipeline
@@ -104,13 +105,19 @@ def run(symbol, tfs, which, min_conf, lookback):
     if not summary:
         summary.append("_Signals found but none categorized as buy/sell after sorting_")
 
-    df = pd.DataFrame(rows)[["strategy","decision","confidence","timeframe","as_of_utc","extras"]]
+    # tag each row with symbol for display
+    for r in rows:
+        r["symbol"] = symbol
+
+    df = pd.DataFrame(rows)[["symbol","strategy","decision","confidence","timeframe","as_of_utc"]]
     df["confidence"] = (df["confidence"]*100.0).round(2)
 
     # small table: only ML predictions (Arvid v1)
     ml_rows = [r for r in rows if str(r.get("strategy")) == "Arvid v1"]
-    ml_df = (pd.DataFrame(ml_rows)[["strategy","decision","confidence","timeframe","as_of_utc","extras"]]
-             if ml_rows else pd.DataFrame(columns=["strategy","decision","confidence","timeframe","as_of_utc","extras"]))
+    ml_df = (
+        pd.DataFrame(ml_rows)[["symbol","strategy","decision","confidence","timeframe","as_of_utc"]]
+        if ml_rows else pd.DataFrame(columns=["symbol","strategy","decision","confidence","timeframe","as_of_utc"])
+    )
     if not ml_df.empty:
         ml_df["confidence"] = (ml_df["confidence"]*100.0).round(2)
 
@@ -121,6 +128,75 @@ def run(symbol, tfs, which, min_conf, lookback):
         md += f"\n_Engine notes_: {res['errors']}"
 
     return df, "<br/>".join(summary) + "<br/><br/>" + md, rows, ml_rows
+
+def run_multi(symbols, tfs, which, min_conf, lookback):
+    """Fetch & Analyze for multiple symbols; aggregates rows and summaries."""
+    all_rows, all_ml_rows, md_parts = [], [], []
+    for sym in symbols:
+        res = evaluate(
+            symbol=sym,
+            timeframes=tfs,
+            which=(None if not which else which),
+            lookback_days=int(lookback),
+            min_confidence=float(min_conf),
+        )
+        if not res.get("ok"):
+            md_parts.append(f"**{sym}**: ❌ {res.get('error','Unknown error')}")
+            continue
+
+        rows = res.get("rows", []) or []
+        if not rows:
+            msg = "No qualifying signals."
+            if res.get("errors"):
+                msg += f" Engine notes: {res['errors']}"
+            md_parts.append(f"**{sym}**: {msg}")
+            continue
+
+        # Tag each row with the symbol inside extras (so UI columns need not change)
+        for r in rows:
+            rr = dict(r)
+            rr["symbol"] = sym
+            all_rows.append(rr)
+
+        # Per-symbol summary
+        top_buy = next((r for r in rows if r["decision"] == "buy"), None)
+        top_sell = next((r for r in rows if r["decision"] == "sell"), None)
+        summary_bits = []
+        if top_buy:
+            summary_bits.append(f"**Top Buy**: {top_buy['strategy']} @ {top_buy['timeframe']} ({round(top_buy['confidence']*100,1)}%)")
+        if top_sell:
+            summary_bits.append(f"**Top Sell**: {top_sell['strategy']} @ {top_sell['timeframe']} ({round(top_sell['confidence']*100,1)}%)")
+        if not summary_bits:
+            summary_bits.append("_Signals found but none categorized as buy/sell after sorting_")
+        md = f"### {sym}\n" + "<br/>".join(summary_bits) + "\n\n"
+        for r in rows[:10]:
+            md += f"- **{r['strategy']}** → **{r['decision']}**, {round(r['confidence']*100,1)}%, {r['timeframe']}\n"
+        if res.get("errors"):
+            md += f"\n_Engine notes_: {res['errors']}\n"
+        md_parts.append(md)
+
+        # ML-only rows (Arvid v1) with symbol tagged in extras
+        ml_rows = [r for r in rows if str(r.get("strategy")) == "Arvid v1"]
+        for r in ml_rows:
+            rr = dict(r)
+            rr["symbol"] = sym
+            all_ml_rows.append(rr)
+
+    # Build DataFrames (keep the same columns the UI expects)
+    if all_rows:
+        df = _pd.DataFrame(all_rows)[["symbol","strategy","decision","confidence","timeframe","as_of_utc"]]
+        df["confidence"] = (df["confidence"]*100.0).round(2)
+    else:
+        df = None
+
+    if all_ml_rows:
+        ml_df = _pd.DataFrame(all_ml_rows)[["symbol","strategy","decision","confidence","timeframe","as_of_utc"]]
+        ml_df["confidence"] = (ml_df["confidence"]*100.0).round(2)
+    else:
+        ml_df = _pd.DataFrame(columns=["symbol","strategy","decision","confidence","timeframe","as_of_utc"])
+
+    summary_md = "<br/><br/>".join(md_parts) if md_parts else "No results."
+    return df, summary_md, all_rows, all_ml_rows
 
 # ---------- Export helpers ----------
 def _timestamp() -> str:
@@ -149,6 +225,10 @@ def save_session(history, rows, symbol):
         json.dump(payload, f, ensure_ascii=False, indent=2)
     return path
 
+def _parse_symbols(text: str):
+    # Accept comma or semicolon separated values
+    return [s.strip() for s in (text or "").replace(";", ",").split(",") if s.strip()]
+
 # ---------- UI ----------
 with gr.Blocks(title="FX Agent – Chat Console", css=CSS) as demo:
     gr.Markdown("# 💬 FX Agent – Chat Console")
@@ -162,19 +242,20 @@ with gr.Blocks(title="FX Agent – Chat Console", css=CSS) as demo:
         # LEFT COLUMN: compact inputs (narrower to free space for Model panel)
         with gr.Column(scale=2, min_width=520, elem_classes=["fx-left"]):
             symbol = gr.Textbox(
-                label="Symbol",
-                placeholder="e.g. USDJPY.a",
+                label="Symbol(s)",
+                placeholder="e.g. USDJPY.a  or  AUDUSD.a,EURUSD.a,GBPUSD.a",
                 scale=1,
                 container=True,
             )
 
+            with gr.Row():
+                auto_trade_btn = gr.Button("Start Auto-Trading", variant="primary")
             tfs = gr.CheckboxGroup(
                 choices=["M1","M5","M15","M30","H1","H4","D1","W1"],
                 value=list(SETTINGS.default_timeframes),
                 label="Timeframes",
                 scale=1
             )
-
             with gr.Row():
                 min_conf = gr.Slider(
                     minimum=0,
@@ -190,24 +271,64 @@ with gr.Blocks(title="FX Agent – Chat Console", css=CSS) as demo:
                     label="Lookback Days",
                     scale=1
                 )
+    # --- Auto-Trading button wiring ---
+    def on_auto_trade(symbol, tfs, min_conf, lookback):
+        from agent.auto_trader import AutoTrader, MultiAutoTrader
+        symbols = _parse_symbols(symbol)
 
-        # RIGHT COLUMN: training UI + small model predictions table (wider)
-        with gr.Column(scale=4, min_width=720, elem_classes=["fx-right"]):
-            if _FEATURE_TRAINING_UI:
-                gr.Markdown("## 🧪 Model")
-                train_btn = gr.Button("Train Model", variant="secondary")
-                gr.Markdown("#### Model Predictions")
-                model_pred_table = gr.Dataframe(
-                    headers=["strategy","decision","confidence","timeframe","as_of_utc","extras"],
-                    wrap=True,
-                    interactive=False,
-                    row_count=6,        # small table
-                    elem_classes=["fx-small-table"]
-                )
-                model_pred_rows_state = gr.State([])
-                model_train_log = gr.Textbox(label="Training Console", value="", max_lines=8, show_copy_button=True)
-            else:
-                gr.Markdown("### ")  # minimal placeholder to keep layout balanced
+        if not symbols:
+            print("[AutoTrader] Please enter a symbol (e.g. USDJPY.a) or a comma-separated list (e.g. AUDUSD.a,EURUSD.a).")
+            return
+
+        import threading
+
+        if len(symbols) == 1:
+            worker = AutoTrader(
+                symbol=symbols[0],
+                timeframes=tfs,
+                min_confidence=min_conf,
+                lookback_days=int(lookback),
+            )
+            threading.Thread(target=worker.run, daemon=True).start()  # single cycle (non-blocking)
+            print(f"[AutoTrader] Started single-symbol auto-trader for {symbols[0]}")
+        else:
+            runner = MultiAutoTrader(
+                symbols=symbols,
+                timeframes=tfs,
+                min_confidence=min_conf,
+                lookback_days=int(lookback),
+                # cycle_sleep_seconds is taken from your auto_trader defaults
+            )
+            threading.Thread(target=runner.run_forever, daemon=True).start()  # infinite loop (non-blocking)
+            print(f"[AutoTrader] Started multi-symbol auto-trader for: {', '.join(symbols)}")
+
+        # no outputs; logs go to console as before
+        return
+
+
+    auto_trade_btn.click(
+        fn=on_auto_trade,
+        inputs=[symbol, tfs, min_conf, lookback],
+        outputs=[],
+    )
+
+    # RIGHT COLUMN: training UI + small model predictions table (wider)
+    with gr.Column(scale=4, min_width=720, elem_classes=["fx-right"]):
+        if _FEATURE_TRAINING_UI:
+            gr.Markdown("## 🧪 Model")
+            train_btn = gr.Button("Train Model", variant="secondary")
+            gr.Markdown("#### Model Predictions")
+            model_pred_table = gr.Dataframe(
+                headers=["symbol","strategy","decision","confidence","timeframe","as_of_utc"],
+                wrap=True,
+                interactive=False,
+                row_count=6,        # small table
+                elem_classes=["fx-small-table"]
+            )
+            model_pred_rows_state = gr.State([])
+            model_train_log = gr.Textbox(label="Training Console", value="", max_lines=8, show_copy_button=True)
+        else:
+            gr.Markdown("### ")  # minimal placeholder to keep layout balanced
 
     which = gr.CheckboxGroup(choices=ALL_STRATS, label="Strategies (leave empty for ALL)")
 
@@ -228,7 +349,7 @@ with gr.Blocks(title="FX Agent – Chat Console", css=CSS) as demo:
 
     place_btn = gr.Button("🚀 Place Order", variant="secondary")
     table = gr.Dataframe(
-        headers=["strategy","decision","confidence","timeframe","as_of_utc","extras"],
+        headers=["symbol","strategy","decision","confidence","timeframe","as_of_utc"],
         wrap=True,
         interactive=False
     )
@@ -244,30 +365,39 @@ with gr.Blocks(title="FX Agent – Chat Console", css=CSS) as demo:
 
     # Button-driven Fetch & Analyze
     def on_click(symbol, tfs, which, min_conf, lookback, history):
-        if not symbol:
-            history = history + [
+        syms = _parse_symbols(symbol)
+        if not syms:
+            history = (history or []) + [
                 {"role":"user","content":"Fetch & Analyze"},
-                {"role":"assistant","content":"Please enter a symbol (e.g., USDJPY.a)."},
+                {"role":"assistant","content":"Please enter a symbol (e.g., USDJPY.a) or a comma-separated list (e.g., AUDUSD.a,EURUSD.a)."},
             ]
             return history, None, None, None, None
-        df, summary_md, rows, ml_rows = run(symbol, tfs, which, min_conf, lookback)
-        if df is None:
-            history = history + [
-                {"role":"user","content":f"Analyze {symbol}"},
+
+        if len(syms) == 1:
+            df, summary_md, rows, ml_rows = run(syms[0], tfs, which, min_conf, lookback)
+            if df is None:
+                history = (history or []) + [
+                    {"role":"user","content":f"Analyze {syms[0]}"},
+                    {"role":"assistant","content":summary_md},
+                ]
+                return history, None, None, None
+            history = (history or []) + [
+                {"role":"user","content":f"Analyze {syms[0]} ({', '.join(tfs)})"},
                 {"role":"assistant","content":summary_md},
             ]
-            return history, None, None, None
-        history = history + [
-            {"role":"user","content":f"Analyze {symbol} ({', '.join(tfs)})"},
-            {"role":"assistant","content":summary_md},
-        ]
+        else:
+            df, summary_md, rows, ml_rows = run_multi(syms, tfs, which, min_conf, lookback)
+            history = (history or []) + [
+                {"role":"user","content":f"Analyze {', '.join(syms)} ({', '.join(tfs)})"},
+                {"role":"assistant","content":summary_md},
+            ]
 
         import pandas as _pd
         ml_df = (_pd.DataFrame(ml_rows)[["strategy","decision","confidence","timeframe","as_of_utc","extras"]]
-                 if ml_rows else _pd.DataFrame(columns=["strategy","decision","confidence","timeframe","as_of_utc","extras"]))
+                if ml_rows else _pd.DataFrame(columns=["strategy","decision","confidence","timeframe","as_of_utc","extras"]))
         if not ml_df.empty:
             ml_df["confidence"] = (ml_df["confidence"]*100.0).round(2)
-        return history, df, rows, ml_df, ml_rows
+        return history, df, rows, ml_df, ml_rows    
 
     run_btn.click(
         fn=on_click,
@@ -278,7 +408,9 @@ with gr.Blocks(title="FX Agent – Chat Console", css=CSS) as demo:
     # --- Train button wiring (small console log only) ---
     if _FEATURE_TRAINING_UI:
         def on_train(symbol, tfs, lookback):
-            syms = [symbol] if symbol else []
+            syms = _parse_symbols(symbol)
+            if not syms:
+                return "Please enter at least one symbol (e.g. USDJPY.a or AUDUSD.a,EURUSD.a)."
             tfsu = [tf.upper() for tf in (tfs or [])]
             res = agent_train_pipeline(syms, tfsu, int(lookback))
             if not res.get("ok"):
@@ -360,22 +492,24 @@ with gr.Blocks(title="FX Agent – Chat Console", css=CSS) as demo:
     # Table row selection → update selected_row_idx, selection_info and side
     def on_table_select(evt: gr.SelectData, rows):
         try:
-            # evt.index can be (row, col) for Dataframe; take row
             ridx = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
         except Exception:
             ridx = None
         if ridx is None or rows is None or ridx >= len(rows):
-            return None, "**Selected row**: _none_", gr.update()
+            return None, "**Selected row**: _none_", gr.update(), gr.update()
         sel = rows[ridx]
-        msg = f"**Selected row**: #{ridx} — {sel['strategy']} → **{sel['decision']}**, {round(sel['confidence']*100,1)}%, {sel['timeframe']}"
-        # Default side from row decision (if valid)
+        msg = (
+            f"**Selected row**: #{ridx} — {sel.get('symbol','?')} | "
+            f"{sel['strategy']} → **{sel['decision']}**, {round(sel['confidence']*100,1)}%, {sel['timeframe']}"
+        )
         default_side = sel["decision"] if sel["decision"] in ("buy","sell") else None
-        return ridx, msg, gr.update(value=default_side)
+        sel_symbol = (sel.get("extras") or {}).get("symbol")
+        return ridx, msg, gr.update(value=default_side), gr.update(value=sel_symbol)
 
     table.select(
         on_table_select,
         inputs=[rows_state],
-        outputs=[selected_row_idx, selection_info, po_side],
+        outputs=[selected_row_idx, selection_info, po_side, symbol],
     )
 
     # Export CSV
@@ -485,7 +619,12 @@ with gr.Blocks(title="FX Agent – Chat Console", css=CSS) as demo:
                 "profit": r.get("profit"),
             })
         df = pd.DataFrame(view) if view else None
-        return df, view, None
+        # Preserve selection if confirmation is checked
+        import gradio as _gr
+        # Try to get current selected index and confirmation state from Gradio states
+        # (Gradio doesn't pass state to refresh, so workaround: don't reset selection)
+        # Always return previous selected_pos_idx if possible
+        return df, view, _gr.get_state('selected_pos_idx') if hasattr(_gr, 'get_state') else None
 
     refresh_pos_btn.click(
         on_refresh_positions_silent,
@@ -516,7 +655,7 @@ with gr.Blocks(title="FX Agent – Chat Console", css=CSS) as demo:
         if not confirmed:
             history = history + [{"role":"assistant","content":"Please tick **Confirm** to close the position."}]
             return history
-        if ridx is None or rows is None or ridx >= len(rows):
+        if symbol is None or ridx is None or rows is None or ridx >= len(rows):
             history = history + [{"role":"assistant","content":"Select a **position** first and refresh if needed."}]
             return history
         sel = rows[int(ridx)]
